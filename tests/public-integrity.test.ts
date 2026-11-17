@@ -24,7 +24,7 @@ describe("public/ 静态资源完整性", () => {
 
   it("docs 页存在且带标题（资产层 /docs/ 路由的实体）", () => {
     const docs = read("public/docs/index.html");
-    expect(docs).toContain("<title>Imgbot documentation</title>");
+    expect(docs).toContain("<title>ImageBot documentation</title>");
   });
 
   it("_headers 覆盖安全头五件套（资产层 CSP 来源）", () => {

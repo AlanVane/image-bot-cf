@@ -282,7 +282,7 @@ function renderLogin() {
   const top = node("header", "login-topbar");
   const identity = node("a", "brand-lockup");
   identity.href = "/";
-  identity.append(brandMark(), node("span", "", "Imgbot"));
+  identity.append(brandMark(), node("span", "", "ImageBot"));
   const loginNav = node("nav", "login-nav");
   const docs = node("a", "documentation-link", "Documentation");
   docs.href = "/docs/";
@@ -303,7 +303,7 @@ function renderLogin() {
     node(
       "p",
       "login-copy",
-      "Imgbot finds the images in your GitHub projects and opens a tidy pull request with the lighter versions. You stay in control; your pages load a little faster.",
+      "ImageBot finds the images in your GitHub projects and opens a tidy pull request with the lighter versions. You stay in control; your pages load a little faster.",
     ),
   );
   const proof = node("div", "login-proof");
@@ -332,7 +332,7 @@ function renderLogin() {
     node(
       "p",
       "login-card-note",
-      "You’ll continue to GitHub to authorize the Imgbot app — no password is entered on this site.",
+      "You’ll continue to GitHub to authorize the ImageBot app — no password is entered on this site.",
     ),
   );
   const login = node("a", "button button-primary login-button", "Sign in");
@@ -370,15 +370,15 @@ function renderLoginMarketing() {
   [
     [
       "1. Install",
-      "Install Imgbot into your GitHub projects with the click of a button.",
+      "Install ImageBot into your GitHub projects with the click of a button.",
     ],
     [
       "2. Merge",
-      "Imgbot sends you a pull request with all of the images it can find optimized. Just merge it and you're done.",
+      "ImageBot sends you a pull request with all of the images it can find optimized. Just merge it and you're done.",
     ],
     [
       "3. Win",
-      "Imgbot watches for new images in your repository and opens more pull requests.",
+      "ImageBot watches for new images in your repository and opens more pull requests.",
     ],
   ].forEach(([title, copy]) => {
     const step = node("li", "step-card");
@@ -416,13 +416,13 @@ function renderLoginMarketing() {
   why.setAttribute("aria-labelledby", "why-title");
   const whyHeading = node("div", "marketing-heading");
   whyHeading.append(node("p", "eyebrow", "Made for the long run"));
-  const whyTitle = node("h2", "", "Why use Imgbot?");
+  const whyTitle = node("h2", "", "Why use ImageBot?");
   whyTitle.id = "why-title";
   whyHeading.append(whyTitle);
   const whyIntro = node(
     "p",
     "why-intro",
-    "Setting up and configuring your own tools can be a complicated and lengthy process. With just a few clicks, you can install Imgbot and permanently solve your image optimization problems.",
+    "Setting up and configuring your own tools can be a complicated and lengthy process. With just a few clicks, you can install ImageBot and permanently solve your image optimization problems.",
   );
   const benefits = node("ul", "benefit-list");
   [
@@ -473,7 +473,7 @@ function renderError() {
   panel.append(button("Try again", "button button-primary", loadWorkspace));
   const brand = node("a", "brand-lockup state-brand");
   brand.href = "/";
-  brand.append(brandMark(), node("span", "", "Imgbot"));
+  brand.append(brandMark(), node("span", "", "ImageBot"));
   page.append(brand, panel);
   app.append(page);
 }
@@ -482,7 +482,7 @@ function renderHeader() {
   const header = node("header", "app-header");
   const identity = node("a", "brand-lockup");
   identity.href = "/";
-  identity.append(brandMark(), node("span", "", "Imgbot"));
+  identity.append(brandMark(), node("span", "", "ImageBot"));
   const divider = node("span", "header-divider");
   divider.setAttribute("aria-hidden", "true");
   const product = node("span", "header-context", "Repository dashboard");
@@ -521,7 +521,7 @@ function renderDashboard() {
   introCopy.append(node("p", "eyebrow", "Your image workspace"));
   const title = node("h1", "");
   title.append(
-    node("span", "", "Imgbot"),
+    node("span", "", "ImageBot"),
     document.createElement("br"),
     node("span", "headline-accent", "installations"),
   );
@@ -530,7 +530,7 @@ function renderDashboard() {
     node(
       "p",
       "intro-subtitle",
-      "Choose what Imgbot watches, then let your pull requests do the talking.",
+      "Choose what ImageBot watches, then let your pull requests do the talking.",
     ),
   );
   const introDecoration = node("div", "intro-decoration");
@@ -884,7 +884,7 @@ function renderSettingsDialog(repo) {
   const helper = node(
     "p",
     "settings-helper",
-    "If you want Imgbot to look after a different branch instead of the default for the repo.",
+    "If you want ImageBot to look after a different branch instead of the default for the repo.",
   );
   body.append(label, input, helper);
   if (state.modalError) {
@@ -1074,7 +1074,7 @@ function renderEmpty() {
     node(
       "p",
       "empty-copy",
-      "Install Imgbot on a GitHub account or organization to see its repositories.",
+      "Install ImageBot on a GitHub account or organization to see its repositories.",
     ),
   );
   const link = node("a", "button button-primary", "Install now");
