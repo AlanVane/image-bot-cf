@@ -68,8 +68,10 @@ import {
   bytesToKb,
   chunk,
   splitOwnerRepo,
+  stagingRefForRun,
   sumSizes,
   thresholdGate,
+  tipViolatesGuard,
   type OptimizedImage,
 } from "./logic";
 
@@ -79,8 +81,6 @@ import {
 
 /** §2.1 / D5：唯一长驻分支名。 */
 const IMGBOT_REF = "heads/imgbot";
-/** 暂存分支：commit 先落它再一次性 force 落到 imgbot（D5 终稿，见 commit 步注释）。 */
-const IMGBOT_STAGING = "heads/imgbot-staging";
 /** bot 提交者身份（§2.1 人类改动守卫的比对基准；D6）。 */
 const BOT_NAME = "image-bot-cf[bot]";
 /** §2.2 D6：commit 作者用本 App 的 bot 身份（不是原版 ImgBotApp）。 */
@@ -1009,6 +1009,8 @@ export class OptimizeRun extends WorkflowEntrypoint<Env, RunDescriptor> {
           const oldTipTree = new Map<string, string>();
           let parentTree: Map<string, string>;
           let expectedHeadOid: string;
+          // P1(TOCTOU)：守卫时刻的 tip 快照，force 落地前复核用。
+          let guardTipSha: string | null = null;
           try {
             const tipSha = await client.getRefCommitSha(
               owner,
@@ -1027,6 +1029,7 @@ export class OptimizeRun extends WorkflowEntrypoint<Env, RunDescriptor> {
             }
             parentTree = oldTipTree;
             expectedHeadOid = tipSha;
+            guardTipSha = tipSha;
           } catch (err) {
             if (!(err instanceof GithubApiError && err.status === 404)) {
               throw err;
@@ -1034,6 +1037,7 @@ export class OptimizeRun extends WorkflowEntrypoint<Env, RunDescriptor> {
             await client.ensureRef(owner, repo, IMGBOT_REF, loaded.baseSha);
             parentTree = new Map(); // 父 = base，树差分基线即 base 本身
             expectedHeadOid = loaded.baseSha;
+            guardTipSha = loaded.baseSha;
           }
 
           // R1（§4.3 方案 A）：GraphQL createCommitOnBranch —— GitHub 自动 PGP 签名。
@@ -1074,9 +1078,11 @@ export class OptimizeRun extends WorkflowEntrypoint<Env, RunDescriptor> {
           }
           const { headline, body } = splitCommitMessage(message);
 
-          // 暂存分支：每次重建到 base（无 PR 挂靠，force 无副作用），commit 落在它上面
-          await client.ensureRef(owner, repo, IMGBOT_STAGING, loaded.baseSha);
-          await client.updateRef(owner, repo, IMGBOT_STAGING, loaded.baseSha, {
+          // 暂存分支：**按 run 唯一**（P1：共享 ref 会被并发 run 互踩），
+          // 每次重建到 base（无 PR 挂靠，force 无副作用），commit 落在它上面
+          const stagingRef = stagingRefForRun(runId);
+          await client.ensureRef(owner, repo, stagingRef, loaded.baseSha);
+          await client.updateRef(owner, repo, stagingRef, loaded.baseSha, {
             force: true,
           });
 
@@ -1085,7 +1091,7 @@ export class OptimizeRun extends WorkflowEntrypoint<Env, RunDescriptor> {
           let newCommitSha: string;
           try {
             newCommitSha = await client.createCommitOnBranch(owner, repo, {
-              branchName: IMGBOT_STAGING,
+              branchName: stagingRef,
               headline,
               body,
               additions,
@@ -1115,12 +1121,28 @@ export class OptimizeRun extends WorkflowEntrypoint<Env, RunDescriptor> {
             }
           }
 
+          // P1（TOCTOU 复核）：守卫校验与 force 落地之间隔了全部 blob 写入，
+          // 人类在窗口内推送/删除 imgbot 会被静默覆盖 → 落地前复核 tip 快照。
+          // 已知残余：复核与 PATCH ref 之间无 CAS（REST refs 不支持），窗口极小。
+          let tipNow: string | null = null;
+          try {
+            tipNow = await client.getRefCommitSha(owner, repo, IMGBOT_REF);
+          } catch (err) {
+            if (!(err instanceof GithubApiError && err.status === 404)) {
+              throw err;
+            }
+          }
+          if (tipViolatesGuard(guardTipSha, tipNow)) {
+            await patchRun(env, runId, { state: "aborted_by_human" });
+            return { status: "aborted" as const };
+          }
+
           // 一次性把 imgbot 落到新 commit（等价原版 rebase 后的 force-push；
           // 目标非空 → PR 正常跟进更新，而非被自动关闭）
           await client.updateRef(owner, repo, IMGBOT_REF, newCommitSha, {
             force: true,
           });
-          await client.deleteRef(owner, repo, IMGBOT_STAGING).catch(() => {});
+          await client.deleteRef(owner, repo, stagingRef).catch(() => {});
 
           // 正向缓存回填（§7.3）：以新 commit 树里的真实 blob sha 记账
           //（产物可寻址——后续轮的重放与"base 已含"判断都靠它）

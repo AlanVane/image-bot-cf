@@ -12,8 +12,10 @@ import {
   bytesToKb,
   chunk,
   splitOwnerRepo,
+  stagingRefForRun,
   sumSizes,
   thresholdGate,
+  tipViolatesGuard,
   TOTAL_STAT_NAME,
 } from "../src/workflow/logic";
 import { createPrBody } from "../src/ux/templates";
@@ -217,5 +219,21 @@ describe("sumSizes（D1 bytes_before / bytes_after / 阈值用 KB）", () => {
     expect(summary.beforeBytes).toBe(5120);
     expect(summary.afterBytes).toBe(3072);
     expect(summary.savedKb).toBe(2);
+  });
+});
+
+describe("P1 修复辅助（staging ref 按 run 唯一 / tip 守卫复核）", () => {
+  it("stagingRefForRun：含 run_id 且与共享名不同", () => {
+    const ref = stagingRefForRun("abc-123");
+    expect(ref).toBe("heads/imgbot-staging-abc-123");
+    expect(stagingRefForRun("other")).not.toBe(ref);
+  });
+
+  it("tipViolatesGuard：快照与实测不一致（含出现/消失）→ 违约", () => {
+    expect(tipViolatesGuard("aaa", "aaa")).toBe(false);
+    expect(tipViolatesGuard(null, null)).toBe(false);
+    expect(tipViolatesGuard("aaa", "bbb")).toBe(true);
+    expect(tipViolatesGuard("aaa", null)).toBe(true);
+    expect(tipViolatesGuard(null, "aaa")).toBe(true);
   });
 });

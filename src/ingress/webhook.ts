@@ -67,28 +67,39 @@ export async function handleWebhook(
 
     const { event, deliveryId } = parseDeliveryHeaders(request.headers);
 
-    // ③ 去重（§4.1.4）：唯一主键 + INSERT OR IGNORE 天然幂等
+    // ③ 去重预查（§4.1.4）：已见过的投递短路。**先入队、后落账**——若 ROUTER.send
+    // 失败则不留下任何去重记录，GitHub 重投可重试（P1 修复：旧顺序会把失败事件
+    // 永久挡掉）；并发重复投递的双跑由 RepoLock 合并（§5.4），无害。
     if (deliveryId) {
-      const inserted = await env.DB.prepare(
-        "INSERT OR IGNORE INTO deliveries (delivery_id, event, received_at) VALUES (?, ?, ?)",
+      const seen = await env.DB.prepare(
+        "SELECT delivery_id FROM deliveries WHERE delivery_id = ?",
       )
-        .bind(deliveryId, event, new Date().toISOString())
-        .run();
-      if ((inserted.meta?.changes ?? 0) === 0) {
+        .bind(deliveryId)
+        .first();
+      if (seen) {
         return json({ ok: true, duplicate: true }, 202);
       }
     }
 
     // ④ 入队
-    if (!event) return json({ ok: true, queued: 0 }, 202);
-
-    const descriptors = mapEventToRuns(event, payload);
+    const descriptors = event ? mapEventToRuns(event, payload) : [];
     for (const desc of descriptors) {
       await env.ROUTER.send(
         deliveryId ? { ...desc, delivery_id: deliveryId } : desc,
         { contentType: "json" },
       );
     }
+
+    // ④′ 去重落账（唯一主键 + INSERT OR IGNORE；并发同投递仅一行生效）
+    if (deliveryId) {
+      await env.DB.prepare(
+        "INSERT OR IGNORE INTO deliveries (delivery_id, event, received_at) VALUES (?, ?, ?)",
+      )
+        .bind(deliveryId, event, new Date().toISOString())
+        .run();
+    }
+
+    if (!event) return json({ ok: true, queued: 0 }, 202);
 
     // ⑤ 合并删分支（§2.1）：202 应答后异步执行，失败只记日志。
     if (event === "push" && isDefaultWebMerge(payload)) {

@@ -688,6 +688,27 @@ describe("POST /api/repos/{owner}/{name}/optimize", () => {
     expect(harness.lock.calls).toHaveLength(0);
   });
 
+  it("URL 段大小写 ≠ GitHub 规范名 → 锁键与描述符用规范名（P1）", async () => {
+    const harness = makeHarness({
+      handlers: {
+        "/repos/Foo/Bar": () =>
+          jsonResponse({
+            full_name: "foo/bar",
+            private: false,
+            default_branch: "main",
+          }),
+        "/repos/Foo/Bar/installation": () => jsonResponse({ id: 42 }),
+      },
+    });
+
+    const res = await callApi(harness, "/api/repos/Foo/Bar/optimize", {
+      method: "POST",
+    });
+    expect(res?.status).toBe(202);
+    expect(harness.lock.calls[0]?.name).toBe("repo:42/foo/bar");
+    expect(harness.lock.calls[0]?.desc.repo).toBe("foo/bar");
+  });
+
   it("成功 → 202，submit 参数为 trigger:'manual' / base_ref:'' / run_id=UUID", async () => {
     const harness = makeHarness({ handlers: repoHandlers("o/r") });
 

@@ -161,6 +161,26 @@ export function sumSizes(
 }
 
 /** 优化结果的内容指纹（§7.3 result_hash 语义）。 */
+/**
+ * 暂存分支名按 run 唯一（P1 修复）：D5 的"commit 先落暂存分支、再一次性 force 落
+ * imgbot"若共享 ref，并发 run（锁租约到期等极端情形）会互踩重建。格式：
+ * `heads/imgbot-staging-<runId>`，commit 步用完即删。
+ */
+export function stagingRefForRun(runId: string): string {
+  return `heads/imgbot-staging-${runId}`;
+}
+
+/**
+ * P1（TOCTOU）人类改动守卫的落地前复核：守卫时刻的 tip 快照与 force 落地前
+ * 实测不一致（含分支出现/消失）→ 视为人类改动，中止而不覆盖。
+ */
+export function tipViolatesGuard(
+  guardTipSha: string | null,
+  currentTipSha: string | null,
+): boolean {
+  return guardTipSha !== currentTipSha;
+}
+
 export async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)]

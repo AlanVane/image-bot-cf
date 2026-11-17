@@ -404,6 +404,8 @@ async function listInstallationRepos(
  */
 interface RepoAccess {
   installationId: number;
+  /** GitHub 规范名（响应体 full_name）——URL 段大小写不可信，锁键/D1 一律用它（P1）。 */
+  fullName: string;
 }
 
 async function resolveRepoAccess(
@@ -442,7 +444,13 @@ async function resolveRepoAccess(
   if (installationId === null) {
     throw new GithubRequestError(502, `GET ${repoPath}/installation: bad body`);
   }
-  return { installationId };
+  const bodyFullName = (repoRes.body as Record<string, unknown> | null)
+    ?.full_name;
+  const canonicalName =
+    typeof bodyFullName === "string" && bodyFullName.includes("/")
+      ? bodyFullName
+      : `${owner}/${name}`;
+  return { installationId, fullName: canonicalName };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -594,6 +602,8 @@ async function optimizeRepo(
   if ("forbidden" in access) {
     return jsonResponse({ error: "forbidden" }, 403);
   }
+  // URL 段大小写可能与 GitHub 规范名不一致 → 后续锁键/D1/描述符一律用规范名（P1）。
+  fullName = access.fullName;
 
   const desc: RunDescriptor = {
     run_id: crypto.randomUUID(),
@@ -682,6 +692,8 @@ async function updateSettings(
   if ("forbidden" in access) {
     return jsonResponse({ error: "forbidden" }, 403);
   }
+  // URL 段大小写可能与 GitHub 规范名不一致 → 后续锁键/D1/描述符一律用规范名（P1）。
+  fullName = access.fullName;
   const installationId = access.installationId;
 
   if (patch.enabled !== undefined) {
@@ -751,6 +763,8 @@ async function repoStats(
   if ("forbidden" in access) {
     return jsonResponse({ error: "forbidden" }, 403);
   }
+  // URL 段大小写可能与 GitHub 规范名不一致 → 后续锁键/D1/描述符一律用规范名（P1）。
+  fullName = access.fullName;
   const installationId = access.installationId;
 
   const totalsRow = await env.DB.prepare(

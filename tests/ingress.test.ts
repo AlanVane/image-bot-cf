@@ -60,12 +60,14 @@ interface Harness {
   sent: RunDescriptor[];
   sendOptions: unknown[];
   deliveryRows: Map<string, string | null>;
+  router: { fail: boolean };
 }
 
 function createHarness(): Harness {
   const sent: RunDescriptor[] = [];
   const sendOptions: unknown[] = [];
   const deliveryRows = new Map<string, string | null>();
+  const router = { fail: false };
 
   const db = {
     prepare(sql: string) {
@@ -86,6 +88,15 @@ function createHarness(): Harness {
               );
               return { success: true, meta: { changes: 1 } };
             },
+            async first() {
+              if (!sql.includes("SELECT delivery_id FROM deliveries")) {
+                throw new Error(`unexpected SQL in test: ${sql}`);
+              }
+              const deliveryId = String(params[0]);
+              return deliveryRows.has(deliveryId)
+                ? { delivery_id: deliveryId }
+                : null;
+            },
           };
         },
       };
@@ -96,6 +107,7 @@ function createHarness(): Harness {
     DB: db,
     ROUTER: {
       async send(body: RunDescriptor, options?: unknown) {
+        if (router.fail) throw new Error("router down");
         sent.push(body);
         sendOptions.push(options);
       },
@@ -103,7 +115,7 @@ function createHarness(): Harness {
     GITHUB_WEBHOOK_SECRET: SECRET,
   } as unknown as Env;
 
-  return { env, sent, sendOptions, deliveryRows };
+  return { env, sent, sendOptions, deliveryRows, router };
 }
 
 async function sign(body: string, secret = SECRET): Promise<string> {
@@ -406,6 +418,30 @@ describe("handleWebhook", () => {
       delivery_id: "d-2",
     });
     expect(sendOptions[0]).toEqual({ contentType: "json" });
+  });
+
+  it("入队失败 → 不落去重记录，重投不被视为重复（P1 事件丢失修复）", async () => {
+    const { env, sent, deliveryRows, router } = createHarness();
+
+    router.fail = true;
+    const failed = await handleWebhook(
+      await hookRequest(pushEvent, { event: "push", delivery: "d-3f" }),
+      env,
+    );
+    expect(failed.status).toBe(500);
+    expect(sent).toHaveLength(0);
+    expect(deliveryRows.size).toBe(0);
+
+    // GitHub 重投同一 delivery：必须还能入队（旧实现会撞去重表把事件永久丢掉）
+    router.fail = false;
+    const retried = await handleWebhook(
+      await hookRequest(pushEvent, { event: "push", delivery: "d-3f" }),
+      env,
+    );
+    expect(retried.status).toBe(202);
+    await expect(retried.json()).resolves.toEqual({ ok: true, queued: 1 });
+    expect(sent).toHaveLength(1);
+    expect(deliveryRows.size).toBe(1);
   });
 
   it("重复 delivery → 202 duplicate，不再 send", async () => {
