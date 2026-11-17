@@ -279,17 +279,25 @@ export function parseInstallationIds(body: unknown): number[] {
   return ids;
 }
 
-/** `GET /installation/repositories` → `{ repo, defaultBranch }`。 */
+/** `GET /installation/repositories` → `{ repo, defaultBranch, isPrivate }`。 */
 export function parseInstallationRepos(
   body: unknown,
-): Array<{ repo: string; defaultBranch: string | null }> {
+): Array<{ repo: string; defaultBranch: string | null; isPrivate: boolean }> {
   const list = asArray(asRecord(body)?.repositories);
-  const repos: Array<{ repo: string; defaultBranch: string | null }> = [];
+  const repos: Array<{
+    repo: string;
+    defaultBranch: string | null;
+    isPrivate: boolean;
+  }> = [];
   for (const item of list) {
     const record = asRecord(item);
     const repo = asString(record?.full_name);
     if (!repo) continue;
-    repos.push({ repo, defaultBranch: asString(record?.default_branch) });
+    repos.push({
+      repo,
+      defaultBranch: asString(record?.default_branch),
+      isPrivate: record?.private === true,
+    });
   }
   return repos;
 }

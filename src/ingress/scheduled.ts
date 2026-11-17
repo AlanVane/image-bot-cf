@@ -141,8 +141,14 @@ async function installationToken(
 async function listInstallationRepos(
   token: string,
   installationId: number,
-): Promise<Array<{ repo: string; defaultBranch: string | null }>> {
-  const repos: Array<{ repo: string; defaultBranch: string | null }> = [];
+): Promise<
+  Array<{ repo: string; defaultBranch: string | null; isPrivate: boolean }>
+> {
+  const repos: Array<{
+    repo: string;
+    defaultBranch: string | null;
+    isPrivate: boolean;
+  }> = [];
   let url: string | null =
     `${GITHUB_API_BASE}/installation/repositories?per_page=${PER_PAGE}`;
 
@@ -232,7 +238,11 @@ export async function runScheduleSweep(
 
   for (const installationId of installationIds) {
     let token: string;
-    let repos: Array<{ repo: string; defaultBranch: string | null }>;
+    let repos: Array<{
+      repo: string;
+      defaultBranch: string | null;
+      isPrivate: boolean;
+    }>;
     try {
       token = await installationToken(env, installationId);
       repos = await listInstallationRepos(token, installationId);
@@ -258,7 +268,7 @@ async function maybeScheduleRepo(
   env: Env,
   token: string,
   installationId: number,
-  entry: { repo: string; defaultBranch: string | null },
+  entry: { repo: string; defaultBranch: string | null; isPrivate: boolean },
   now: Date,
 ): Promise<void> {
   const split = splitRepo(entry.repo);
@@ -292,6 +302,7 @@ async function maybeScheduleRepo(
       repo: entry.repo,
       trigger: "schedule",
       base_ref: baseRef,
+      private: entry.isPrivate,
     },
     { contentType: "json" },
   );

@@ -252,6 +252,22 @@ export function shouldSkipDisabled(
   return enabled === 0;
 }
 
+/**
+ * D16 运行期私有配额闸门：计费开启且仓库私有、已启用私有仓库数超过计划上限 → 本轮跳过。
+ *
+ * 边界：`count > cap` 才跳过（cap = 3 时允许第 1..3 个私有仓库）；
+ * cap = 0（Marketplace 免费档）= 任何私有仓库都超限。
+ * 计费关闭（self-host）时 env 上限只在仪表盘开关时刻生效，run 期不拦（旧行为）。
+ */
+export function shouldSkipPrivateQuota(
+  isPrivate: boolean,
+  billingOn: boolean,
+  count: number,
+  cap: number,
+): boolean {
+  return isPrivate && billingOn && count > cap;
+}
+
 export async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)]

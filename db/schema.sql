@@ -13,12 +13,27 @@ CREATE TABLE repos (
   name                TEXT NOT NULL,     -- owner/repo
   default_branch      TEXT,
   enabled             INTEGER NOT NULL DEFAULT 1,
+  is_private          INTEGER,           -- D16：NULL = 未知（run 期由 RunDescriptor 回填）
   last_run_at         TEXT,
   PRIMARY KEY (installation_id, name)
 );
 -- `repos.default_branch_override` 已废弃（分支覆盖以 `settings` 表为准，
 -- 见 dashboard/api.ts 的 SETTING_DEFAULT_BRANCH）：既有库升级执行一次
 --   ALTER TABLE repos DROP COLUMN default_branch_override;
+-- D16 既有库升级：
+--   ALTER TABLE repos ADD COLUMN is_private INTEGER;
+
+-- D16 计费层：GitHub Marketplace 购买状态（webhook `marketplace_purchase` 落库）。
+-- `account_id` = GitHub 账户 id（User/Organization）；`plan_id` 由 listing 创建时分配，
+-- 与 env `PLAN_PRIVATE_CAPS` 的键对应。`state` = active | cancelled。
+CREATE TABLE IF NOT EXISTS marketplace_purchases (
+  account_id    INTEGER PRIMARY KEY,
+  account_login TEXT,
+  plan_id       INTEGER NOT NULL,
+  plan_name     TEXT,
+  state         TEXT NOT NULL DEFAULT 'active',
+  updated_at    TEXT NOT NULL
+);
 
 CREATE TABLE runs (
   run_id          TEXT PRIMARY KEY,      -- = Workflow instance id

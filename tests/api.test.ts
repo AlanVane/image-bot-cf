@@ -66,6 +66,15 @@ interface SessionSeed {
   expires_at?: string | null;
 }
 
+/** D16：Marketplace 购买行（`marketplace_purchases`）。 */
+interface MarketplacePurchaseSeed {
+  account_id: number;
+  account_login?: string | null;
+  plan_id: number;
+  plan_name?: string | null;
+  state?: string;
+}
+
 interface Seed {
   runs?: RunsSeed[];
   pulls?: PullsSeed[];
@@ -73,6 +82,8 @@ interface Seed {
   settings?: SettingsSeed[];
   /** 会话行（401 清理断言 / 真实 requireUser 的刷新链路）。 */
   sessions?: SessionSeed[];
+  /** Marketplace 购买行（D16 计划解析）。 */
+  marketplacePurchases?: MarketplacePurchaseSeed[];
 }
 
 type Row = Record<string, unknown>;
@@ -114,6 +125,7 @@ class FakeD1 {
   repos: ReposSeed[];
   settings: SettingsSeed[];
   sessions: SessionSeed[];
+  marketplacePurchases: MarketplacePurchaseSeed[];
   /** 记录全部写语句，供 UPSERT 参数断言。 */
   executed: Array<{ sql: string; args: unknown[] }> = [];
 
@@ -123,6 +135,7 @@ class FakeD1 {
     this.repos = [...(seed.repos ?? [])];
     this.settings = [...(seed.settings ?? [])];
     this.sessions = [...(seed.sessions ?? [])];
+    this.marketplacePurchases = [...(seed.marketplacePurchases ?? [])];
   }
 
   prepare(sql: string): FakeStatement {
@@ -265,6 +278,27 @@ class FakeD1 {
           opened_at: row.opened_at ?? null,
           closed_at: row.closed_at ?? null,
         }));
+    }
+
+    // D16：Marketplace 购买行解析（account_id 优先，account_login 兜底）。
+    if (
+      norm.startsWith(
+        "SELECT plan_id, plan_name, state FROM marketplace_purchases",
+      )
+    ) {
+      const [key] = args as [number | string];
+      const byId = norm.includes("WHERE account_id = ?");
+      const row = this.marketplacePurchases.find((entry) =>
+        byId ? entry.account_id === key : entry.account_login === key,
+      );
+      if (!row) return [];
+      return [
+        {
+          plan_id: row.plan_id,
+          plan_name: row.plan_name ?? null,
+          state: row.state ?? "active",
+        },
+      ];
     }
 
     // 会话行（真实 requireUser 的刷新链路用；其余用例注入 requireUser 不触达）。
@@ -473,6 +507,12 @@ function makeHarness(options: {
   appSlug?: string;
   /** `QUOTA_PRIVATE_REPOS`（字符串 vars；缺省 = 不限）。 */
   quotaPrivateRepos?: string;
+  /** D16：`BILLING_MODE`（"marketplace" 启用计划配额）。 */
+  billingMode?: string;
+  /** D16：`PLAN_PRIVATE_CAPS` JSON。 */
+  planPrivateCaps?: string;
+  /** D16：`FREE_PRIVATE_CAP`。 */
+  freePrivateCap?: string;
 }): Harness {
   const db = new FakeD1(options.seed);
   const lock = new FakeRepoLock();
@@ -488,6 +528,9 @@ function makeHarness(options: {
     GITHUB_CLIENT_ID: "Iv1.test-client-id",
     GITHUB_CLIENT_SECRET: "test-client-secret",
     QUOTA_PRIVATE_REPOS: options.quotaPrivateRepos,
+    BILLING_MODE: options.billingMode,
+    PLAN_PRIVATE_CAPS: options.planPrivateCaps,
+    FREE_PRIVATE_CAP: options.freePrivateCap,
   } as unknown as Env;
 
   return {
@@ -610,7 +653,7 @@ describe("会话守卫", () => {
     }
   });
 
-  it("GET /api/me → login / userId / installUrl（缺省 null）", async () => {
+  it("GET /api/me → login / userId / installUrl（缺省 null）+ plan 摘要", async () => {
     const harness = makeHarness({ handlers: {} });
     const res = await callApi(harness, "/api/me");
     expect(res?.status).toBe(200);
@@ -618,6 +661,7 @@ describe("会话守卫", () => {
       login: "octocat",
       userId: 583231,
       installUrl: null,
+      plan: { name: null, privateLimit: 0, source: "env" },
     });
   });
 
@@ -628,6 +672,7 @@ describe("会话守卫", () => {
       login: "octocat",
       userId: 583231,
       installUrl: "https://github.com/apps/my-imgbot/installations/new",
+      plan: { name: null, privateLimit: 0, source: "env" },
     });
   });
 });
@@ -1138,6 +1183,7 @@ describe("POST /api/repos/{owner}/{name}/optimize", () => {
       repo: "o/r",
       trigger: "manual",
       base_ref: "",
+      private: false,
     });
 
     // /user/* 系端点必须用用户 token（不是 installation token）；
@@ -1548,6 +1594,221 @@ describe("POST /api/repos/{owner}/{name}/settings 私有仓库配额", () => {
     expect(res?.status).toBe(200);
     expect(harness.db.executed).toHaveLength(1);
     expect(harness.db.executed[0].sql).toContain("INSERT INTO settings");
+    expect(
+      harness.fetchCalls.some((call) =>
+        call.url.includes("/user/installations/42/repositories"),
+      ),
+    ).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* D16 计费层：Marketplace 计划驱动私有配额                                     */
+/* -------------------------------------------------------------------------- */
+
+describe("Marketplace 计划（BILLING_MODE=marketplace）", () => {
+  /** installation 响应里的账户 id（与集市 account.id 同源）。 */
+  const installationWithAccount = {
+    "/repos/o/private-r/installation": () =>
+      jsonResponse({ id: 42, account: { id: 583231, login: "octocat" } }),
+    "/repos/o/r/installation": () =>
+      jsonResponse({ id: 42, account: { id: 583231, login: "octocat" } }),
+  };
+
+  it("GET /api/me → plan 摘要来自 active 计划映射", async () => {
+    const harness = makeHarness({
+      handlers: {},
+      billingMode: "marketplace",
+      planPrivateCaps: '{"1001":3,"1002":10}',
+      seed: {
+        marketplacePurchases: [
+          {
+            account_id: 583231,
+            account_login: "octocat",
+            plan_id: 1001,
+            plan_name: "Agency",
+            state: "active",
+          },
+        ],
+      },
+    });
+
+    const res = await callApi(harness, "/api/me");
+    expect(res?.status).toBe(200);
+    expect(await res?.json()).toMatchObject({
+      plan: { name: "Agency", privateLimit: 3, source: "plan" },
+    });
+  });
+
+  it("GET /api/me → 已取消 / 未知计划 → 免费档（source: free）", async () => {
+    const cancelled = makeHarness({
+      handlers: {},
+      billingMode: "marketplace",
+      planPrivateCaps: '{"1001":3}',
+      seed: {
+        marketplacePurchases: [
+          {
+            account_id: 583231,
+            plan_id: 1001,
+            plan_name: "Agency",
+            state: "cancelled",
+          },
+        ],
+      },
+    });
+    expect(
+      (
+        (await (await callApi(cancelled, "/api/me"))?.json()) as {
+          plan: unknown;
+        }
+      ).plan,
+    ).toEqual({ name: null, privateLimit: 0, source: "free" });
+
+    const unknownPlan = makeHarness({
+      handlers: {},
+      billingMode: "marketplace",
+      planPrivateCaps: '{"1001":3}',
+      seed: {
+        marketplacePurchases: [
+          {
+            account_id: 583231,
+            plan_id: 999999,
+            plan_name: "Mystery",
+            state: "active",
+          },
+        ],
+      },
+    });
+    expect(
+      (
+        (await (await callApi(unknownPlan, "/api/me"))?.json()) as {
+          plan: unknown;
+        }
+      ).plan,
+    ).toEqual({ name: null, privateLimit: 0, source: "free" });
+  });
+
+  it("启用私有仓库达计划上限 → 429，且不写 D1", async () => {
+    const harness = makeHarness({
+      handlers: repoHandlers(
+        "o/private-r",
+        {
+          ...installationWithAccount,
+          "/user/installations/42/repositories": repoListHandler([
+            { fullName: "o/private-r", private: true },
+            { fullName: "o/other", private: true },
+          ]),
+        },
+        true,
+      ),
+      billingMode: "marketplace",
+      planPrivateCaps: '{"1001":1}',
+      seed: {
+        // 账户 id 精确命中；account_login 故意写错，证明优先用 account.id。
+        marketplacePurchases: [
+          {
+            account_id: 583231,
+            account_login: "not-octocat",
+            plan_id: 1001,
+            plan_name: "Agency",
+            state: "active",
+          },
+        ],
+        repos: [{ installation_id: 42, name: "o/other", enabled: 1 }],
+      },
+    });
+
+    const res = await callApi(
+      harness,
+      "/api/repos/o/private-r/settings",
+      postJson({ enabled: true }),
+    );
+
+    expect(res?.status).toBe(429);
+    expect(await res?.json()).toEqual({ error: "private_quota_exceeded" });
+    expect(harness.db.executed).toHaveLength(0);
+  });
+
+  it("升级到更高计划后 → 放行（上限按 active 计划重算）", async () => {
+    const harness = makeHarness({
+      handlers: repoHandlers(
+        "o/private-r",
+        {
+          ...installationWithAccount,
+          "/user/installations/42/repositories": repoListHandler([
+            { fullName: "o/private-r", private: true },
+            { fullName: "o/other", private: true },
+          ]),
+        },
+        true,
+      ),
+      billingMode: "marketplace",
+      planPrivateCaps: '{"1001":1,"1002":10}',
+      seed: {
+        marketplacePurchases: [
+          {
+            account_id: 583231,
+            account_login: "octocat",
+            plan_id: 1002,
+            plan_name: "Enterprise",
+            state: "active",
+          },
+        ],
+        repos: [{ installation_id: 42, name: "o/other", enabled: 1 }],
+      },
+    });
+
+    const res = await callApi(
+      harness,
+      "/api/repos/o/private-r/settings",
+      postJson({ enabled: true }),
+    );
+
+    expect(res?.status).toBe(200);
+    expect(harness.db.executed[0].args).toEqual([42, "o/private-r", 1]);
+  });
+
+  it("免费档（无购买行，cap = 0）→ 任何私有仓库都 429", async () => {
+    const harness = makeHarness({
+      handlers: repoHandlers(
+        "o/private-r",
+        {
+          "/user/installations/42/repositories": repoListHandler([]),
+        },
+        true,
+      ),
+      billingMode: "marketplace",
+      seed: {
+        repos: [],
+      },
+    });
+
+    const res = await callApi(
+      harness,
+      "/api/repos/o/private-r/settings",
+      postJson({ enabled: true }),
+    );
+
+    expect(res?.status).toBe(429);
+    expect(harness.db.executed).toHaveLength(0);
+  });
+
+  it("计费关闭时 FREE_PRIVATE_CAP 不生效（self-host 0 = 不限）", async () => {
+    const harness = makeHarness({
+      handlers: repoHandlers("o/private-r", {}, true),
+      freePrivateCap: "0",
+      seed: {
+        repos: [{ installation_id: 42, name: "o/other", enabled: 1 }],
+      },
+    });
+
+    const res = await callApi(
+      harness,
+      "/api/repos/o/private-r/settings",
+      postJson({ enabled: true }),
+    );
+
+    expect(res?.status).toBe(200);
     expect(
       harness.fetchCalls.some((call) =>
         call.url.includes("/user/installations/42/repositories"),

@@ -16,6 +16,11 @@ export interface RunDescriptor {
   base_ref: string;
   base_sha?: string;
   delivery_id?: string;
+  /**
+   * D16：仓库是否私有（GitHub payload / 仓库列表给出时填充）。
+   * 缺省 = 未知（run 期会按已知值回填 `repos.is_private`）。
+   */
+  private?: boolean;
 }
 
 /** §2.3 .imgbotconfig 解析结果 */
@@ -57,7 +62,10 @@ export type RunState =
   | "skipped_threshold"
   | "skipped_nochange"
   | "skipped_guard"
-  /** 仪表盘里该仓库被停用（`repos.enabled = 0`）：本轮直接收尾，不扫描。 */
+  /**
+   * 本轮直接收尾、不扫描：仪表盘停用该仓库（`repos.enabled = 0`），
+   * 或 D16 私有仓库数超过当前 Marketplace 计划上限。
+   */
   | "skipped_disabled"
   | "aborted_by_human"
   | "failed";
@@ -162,6 +170,18 @@ export interface Env {
   QUOTA_DAILY_RUNS?: string;
   /** D10 配额：每 installation 可同时启用的私有仓库数上限；0/缺省 = 不限（字符串 vars）。 */
   QUOTA_PRIVATE_REPOS?: string;
+  /**
+   * P4 计费层开关：`marketplace` = 私有仓库上限由 GitHub Marketplace 计划决定；
+   * 其他值/缺省 = 关闭（私有配额仍只看 `QUOTA_PRIVATE_REPOS`，self-host 行为）。
+   */
+  BILLING_MODE?: string;
+  /**
+   * Marketplace 计划 ID → 私有仓库上限的 JSON 映射，如 `{"123456":3,"123457":10}`。
+   * 计划 ID 在 GitHub 创建 listing 时分配；值 0 = 该档不允许私有仓库。
+   */
+  PLAN_PRIVATE_CAPS?: string;
+  /** 无有效 Marketplace 计划（未订阅/已取消/未知 plan_id）时的私有仓库上限；缺省 "0"。 */
+  FREE_PRIVATE_CAP?: string;
   /**
    * 会话 token 静态加密密钥：base64(32 random bytes)，经 `wrangler secret` 设置。
    * 缺省 = 明文开发模式；配置后 `sessions.user_token` / `refresh_token` 以

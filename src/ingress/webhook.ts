@@ -83,6 +83,13 @@ export async function handleWebhook(
 
     // ④ 入队
     const descriptors = event ? mapEventToRuns(event, payload) : [];
+
+    // ④′ 计费：Marketplace 购买/变更/取消 → `marketplace_purchases` UPSERT。
+    // 不进 ROUTER（不产生 run），但仍走同一 delivery 去重与 202 应答路径。
+    if (event === "marketplace_purchase") {
+      await applyMarketplacePurchase(env, payload);
+    }
+
     for (const desc of descriptors) {
       await env.ROUTER.send(
         deliveryId ? { ...desc, delivery_id: deliveryId } : desc,
@@ -129,6 +136,104 @@ function json(body: unknown, status: number): Response {
     status,
     headers: { "content-type": "application/json; charset=utf-8" },
   });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Marketplace 计费（D16）                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * payload：`{action, marketplace_purchase: {account: {id, login}, plan: {id, name}}}`
+ * （GitHub Marketplace webhook，无 `installation` 信封）。
+ *
+ * `action` 语义：
+ * - `purchased` / `changed` → 该账户 plan 置为 payload 里的新计划，`state = active`；
+ * - `cancelled` → 保留原 plan 行（payload 仍带 plan），`state = cancelled`；
+ * - 其他（`pending_change` 等）/畸形 payload → 不写库（仍 202，避免 GitHub 重投）。
+ */
+const MARKETPLACE_PURCHASE_UPSERT =
+  "INSERT INTO marketplace_purchases " +
+  "(account_id, account_login, plan_id, plan_name, state, updated_at) " +
+  "VALUES (?, ?, ?, ?, ?, ?) " +
+  "ON CONFLICT(account_id) DO UPDATE SET " +
+  "account_login = excluded.account_login, " +
+  "plan_id = excluded.plan_id, " +
+  "plan_name = excluded.plan_name, " +
+  "state = excluded.state, " +
+  "updated_at = excluded.updated_at";
+
+interface MarketplacePurchase {
+  accountId: number;
+  accountLogin: string | null;
+  planId: number;
+  planName: string | null;
+  state: "active" | "cancelled";
+}
+
+async function applyMarketplacePurchase(
+  env: Env,
+  payload: unknown,
+): Promise<void> {
+  const purchase = parseMarketplacePurchase(payload);
+  if (!purchase) return;
+  await env.DB.prepare(MARKETPLACE_PURCHASE_UPSERT)
+    .bind(
+      purchase.accountId,
+      purchase.accountLogin,
+      purchase.planId,
+      purchase.planName,
+      purchase.state,
+      new Date().toISOString(),
+    )
+    .run();
+}
+
+function parseMarketplacePurchase(
+  payload: unknown,
+): MarketplacePurchase | null {
+  const body = asRecord(payload);
+  const action = typeof body?.action === "string" ? body.action : null;
+  const state =
+    action === "cancelled"
+      ? ("cancelled" as const)
+      : action === "purchased" || action === "changed"
+        ? ("active" as const)
+        : null;
+  if (!state) return null;
+
+  const purchase = asRecord(body?.marketplace_purchase);
+  const account = asRecord(purchase?.account);
+  const plan = asRecord(purchase?.plan);
+  const accountId = asId(account?.id);
+  const planId = asId(plan?.id);
+  if (accountId === null || planId === null) return null;
+
+  return {
+    accountId,
+    accountLogin: asString(account?.login),
+    planId,
+    planName: asString(plan?.name),
+    state,
+  };
+}
+
+/** payload 窄化helpers（外部 JSON 完全不可信；只在本文件计费分支使用）。 */
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === "string" && value !== "" ? value : null;
+}
+
+function asId(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value)
+    ? value
+    : typeof value === "string" && /^\d+$/.test(value.trim())
+      ? Number(value.trim())
+      : null;
 }
 
 /**
