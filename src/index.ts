@@ -8,6 +8,8 @@
  */
 import type { Env, RunDescriptor } from "./types";
 import { handleWebhook } from "./ingress/webhook";
+import { handleAuthRoute } from "./dashboard/auth";
+import { handleApiRoute } from "./dashboard/api";
 import {
   CRON_PR_POISON,
   CRON_SCHEDULE,
@@ -31,13 +33,21 @@ export default {
       // ctx 让合并删分支能在 202 之后继续跑（waitUntil）。
       return handleWebhook(request, env, ctx);
     }
+    // P3 仪表盘：OAuth 三路由（/api/auth/*）
+    const auth = await handleAuthRoute(env, request, url);
+    if (auth) return auth;
+    // P3 仪表盘：REST API（自带 401 守卫；未命中返回 null）
+    const api = await handleApiRoute(env, request, url);
+    if (api) return api;
+
     if (url.pathname === "/healthz" && request.method === "GET") {
       return new Response("ok", {
         status: 200,
         headers: { "content-type": "text/plain; charset=utf-8" },
       });
     }
-    return new Response("not found", { status: 404 });
+    // 静态资源（run_worker_first 只保 /api/*；SPA 兜底在资产层）
+    return env.ASSETS.fetch(request);
   },
 
   async queue(batch: MessageBatch<RunDescriptor>, env: Env): Promise<void> {

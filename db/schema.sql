@@ -74,3 +74,14 @@ CREATE TABLE settings (
   value           TEXT,
   PRIMARY KEY (installation_id, repo, key)
 );
+
+-- P3 仪表盘：用户会话（cookie 只带 session_id，token 仅存服务端）
+CREATE TABLE sessions (
+  session_id TEXT PRIMARY KEY,
+  user_login TEXT NOT NULL,
+  user_id    INTEGER,
+  user_token TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+CREATE INDEX idx_sessions_expires ON sessions(expires_at);

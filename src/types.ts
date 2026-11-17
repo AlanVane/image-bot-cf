@@ -137,7 +137,12 @@ export interface Env {
   IMAGE_CONTAINER: DurableObjectNamespace<
     import("./container/image-container").ImageContainer
   >;
+  /** P3 仪表盘静态资产（wrangler.jsonc `assets` 块）。 */
+  ASSETS: Fetcher;
   GITHUB_APP_ID: string;
   GITHUB_PRIVATE_KEY: string;
   GITHUB_WEBHOOK_SECRET: string;
+  /** P3 仪表盘 OAuth（App 页 OAuth credentials 生成）。 */
+  GITHUB_CLIENT_ID: string;
+  GITHUB_CLIENT_SECRET: string;
 }

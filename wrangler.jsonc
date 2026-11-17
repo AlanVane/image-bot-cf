@@ -74,6 +74,12 @@
   "triggers": {
     "crons": ["*/30 * * * *", "0 3 * * *"]
   },
+  // P3 仪表盘：静态资源与 API 同域；/api/* 先进 Worker，其余交资产层（SPA 兜底）
+  "assets": {
+    "directory": "./public",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/healthz"]
+  },
   "routes": [
     { "pattern": "imgbot.alanpally.com", "custom_domain": true }
   ]
