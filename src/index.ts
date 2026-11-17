@@ -157,7 +157,14 @@ async function dispatch(
       headers: { "content-type": "text/plain; charset=utf-8" },
     });
   }
-  // 静态资源（run_worker_first 只保 /api/*；SPA 兜底在资产层）
+  // 未命中路由：/api/* 一律 404 JSON（SPA 不兜给 API 语义）；其余才交资产层
+  //（run_worker_first 现状下几乎不可达，仅防御 run_worker_first 扩宽的未来）。
+  if (url.pathname.startsWith("/api/")) {
+    return new Response(JSON.stringify({ error: "not_found" }), {
+      status: 404,
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+  }
   return env.ASSETS.fetch(request);
 }
 
