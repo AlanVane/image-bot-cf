@@ -1,0 +1,9 @@
+{
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  // 任务 5 / DESIGN §11-3：workerd 真环境实测专用（本地 wrangler dev 运行，不部署）
+  "name": "image-bot-bench",
+  "main": "bench-worker.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "limits": { "cpu_ms": 300000 }
+}

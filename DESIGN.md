@@ -508,7 +508,7 @@ DoD：仪表盘操作与原版 `Web/` 行为对齐；多租户限额生效。
 
 1. ✅ **已定案并落地（2026-11-17）**：走 §4.3 方案 A（GraphQL `createCommitOnBranch`），真实流水线 commit `f8e5ac7` 实测 `verified: true`（GitHub PGP 签名）。二进制 base64 保真、文本同规均已实测；备胎 B（openpgp.js）封存
 2. ✅ **已实测（2026-11-17）**：REST Git Data API **不服务** wiki 仓（`github/gitignore.wiki` 等三个有内容的公共 wiki 全部 404，判别性实验）→ R5 走 **git 协议**（isomorphic-git，官方支持 Workers），wiki 模式 = clone→优化→直接 push 默认分支
-3. `@jsquash` 各 codec 在 workerd 实测 CPU/内存（本地基准是 Node V8，同引擎但需真环境确认 8MP 边界值）；并实测 workerd 是否提供全局 `ImageData`（jsquash 解码内部 `new ImageData`，缺则在 codec init 补 ~5 行 shim；类型已用 `ImageDataLike` 解耦）
+3. ✅ **已实测（2026-11-17，`bench/workerd/` 真 workerd）**：workerd 提供全局 `ImageData`（无需 shim，`ImageDataLike` 解耦保留）；codec 计时单线程 8MP 边界全部在 5min/步预算内（jpeg-encode ≈980ms、png 编解码 ≈100ms、oxipng ≈8.5s）；`navigator.hardwareConcurrency=1`。数字与复现脚本见 `bench/WORKERD.md`（含 commit 载荷探针与"本地 dev 不执行 128MB 隔离墙"的注意项）
 4. ~~oxipng/jpegtran 的 wasm 构建产物体积与 SIMD 支持~~ **oxipng 半闭环（2026-11-17）**：`@jsquash/oxipng` 2.3.0 ST wasm 实测 **164KB**（MT 版 232KB 不适用——workerd 无线程，已钉 ST pkg），无 SIMD 依赖；**jpegtran 侧仍开放**（`@chimok/jpegtran-js` 仅几何变换不含 `-optimize`，见任务 2）
 5. ~~GPL 编解码的许可策略（R7）~~ **已定案（2026-11-17）**：bundle 零 copyleft，gifsicle 仅容器独立进程——见 LICENSES.md §3 与 §9-R7
 6. ✅ ~~`ignoredFiles` 正则等价性测试向量~~ 已对拍：上游 `RepoConfiguration` MSTest 向量已移植进 `tests/config.test.ts`
