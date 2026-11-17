@@ -67,7 +67,7 @@ Real-repo end-to-end verification (maintainers): push a `.imgbotconfig` change o
 ## Self-hosting
 
 1. Create a GitHub App: repository permissions **Contents: read & write**, **Pull requests: read & write**, **Metadata: read**; subscribe to `push`, `pull_request`, `installation`, `installation_repositories`; generate a webhook secret and a PKCS#1 private key; enable OAuth credentials for the dashboard.
-2. Copy `.dev.vars.example` → `.dev.vars` for local work; set remote secrets with `npx wrangler secret put <NAME>` (`GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`). Set `GITHUB_APP_SLUG` in `wrangler.jsonc` `vars` for the dashboard/PR install link.
+2. Copy `.dev.vars.example` → `.dev.vars` for local work; set remote secrets with `npx wrangler secret put <NAME>` (`GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`). Set `GITHUB_APP_SLUG` in `wrangler.jsonc` `vars` for the dashboard/PR install link. Optional: `QUOTA_DAILY_RUNS` caps runs started per installation per UTC day (`0` = unlimited).
 3. `npx wrangler deploy` — also builds the `container/` Docker image used for oversized images.
 4. Point the App's webhook at `https://<your-domain>/api/hook`.
 

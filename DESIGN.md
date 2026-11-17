@@ -40,6 +40,7 @@
 | D7  | PR body 页脚链接指向本项目                                                                                                                                                                                                                                           | 品牌归属                                                                                                                                                        |
 | D8  | 调度门限用 D1 运行史判断（原版扫 git 历史找 bot commit）                                                                                                                                                                                                             | API 路线下查历史昂贵，D1 更快且等价                                                                                                                             |
 | D9  | P3 仪表盘视觉为全新设计；**操作语义与原版 `Web/` 对齐**，按钮/弹窗/状态文案沿用原版逐字（"Request new optimization"、"Settings for …" 等），登录页营销文案与统计面板为新写（原版无统计页）；"Documentation" 链接引用原版 imgbot.net/docs（`.imgbotconfig` 语义兼容） | 原版 Bootstrap+Vue 观感过时；UX 对等 = 操作对等，逐字契约（§2.2）只覆盖 PR/commit 模板                                                                          |
+| D10 | 多租户配额 = **每 installation 每 UTC 日 run 上限**（`QUOTA_DAILY_RUNS`，默认 0=不限）；在 `RepoLock.submit` 唯一入口漏斗收口；私有仓档位/Metered 计费随 Marketplace 层引入（维持 D3）                                                                               | 无计费层时的成本护栏（oracle P2-7）；原版的 planId 私有仓配额属商业层，复刻体验 ≠ 复刻商业                                                                      |
 
 ---
 
@@ -454,6 +455,8 @@ CREATE TABLE settings (                  -- 仪表盘/手动覆盖项（分支�
 | R2               | N 图暂存             | 5TiB/对象                | TTL 清理                                                                               |
 
 平台成本：Workers Paid（$5/月，含 10M req + 30M CPU-ms，超量 $0.02/CPU-ms 百万）+ D1/R2/Queues 免费额度 → 典型个人/中型用量**月成本个位数美元**；对比原版 Azure Functions 长驻容器显著更低。
+
+**多租户护栏（D10）**：`QUOTA_DAILY_RUNS`（wrangler vars，默认 0=不限）限制每 installation 每 UTC 日启动的 run 数，在 `RepoLock.submit` 漏斗执行；仪表盘手动触发遇限返回 429 `quota_exceeded`。
 
 ---
 

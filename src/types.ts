@@ -151,4 +151,6 @@ export interface Env {
   GITHUB_CLIENT_SECRET: string;
   /** P3 仪表盘 "Install now" 直达安装页（可选；缺省前端兜底到 GitHub 安装管理页）。 */
   GITHUB_APP_SLUG?: string;
+  /** D10 配额：每 installation 每 UTC 日 run 上限；0/缺省 = 不限（字符串 vars）。 */
+  QUOTA_DAILY_RUNS?: string;
 }

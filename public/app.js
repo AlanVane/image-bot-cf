@@ -67,6 +67,7 @@ async function api(path, options = {}) {
     const messages = {
       400: "That change could not be saved. Check the value and try again.",
       403: "You do not have access to this repository.",
+      429: "This installation has reached its daily optimization quota. Try again tomorrow.",
       500: "The service had a problem. Please try again.",
       502: "GitHub could not be reached. Please try again.",
     };
@@ -75,6 +76,8 @@ async function api(path, options = {}) {
       forbidden: "You do not have access to this repository.",
       invalid_body:
         "That change could not be saved. Check the value and try again.",
+      quota_exceeded:
+        "This installation has reached its daily optimization quota. Try again tomorrow.",
       github_error: "GitHub could not be reached. Please try again.",
       internal_error: "The service had a problem. Please try again.",
     };

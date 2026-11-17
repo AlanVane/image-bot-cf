@@ -75,8 +75,10 @@
     "crons": ["*/30 * * * *", "0 3 * * *"]
   },
   // 仪表盘 "Install now" 直达安装页（§13.3 installUrl；slug 公开信息非密钥）
+  // QUOTA_DAILY_RUNS：D10 多租户配额（每 installation 每 UTC 日 run 上限；0 = 不限）
   "vars": {
-    "GITHUB_APP_SLUG": "image-bot-cf"
+    "GITHUB_APP_SLUG": "image-bot-cf",
+    "QUOTA_DAILY_RUNS": "0"
   },
   // P3 仪表盘：静态资源与 API 同域；/api/* 先进 Worker，其余交资产层（SPA 兜底）
   "assets": {

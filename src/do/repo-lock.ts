@@ -17,6 +17,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 
+import { quotaAllowsNewRun } from "../quota";
 import type { Env, RunDescriptor } from "../types";
 
 /** §5.4 租约时长：60min（workflow 墙钟不限，靠 heartbeat 续）。 */
@@ -34,6 +35,8 @@ export interface RepoLockSubmitResult {
   started: boolean;
   /** true = 锁被占用，描述符被记为 pending（后到者覆盖）。 */
   coalesced: boolean;
+  /** true = 配额用尽（D10），未启动也未记 pending；缺省/undefined = 未触发。 */
+  quotaExceeded?: boolean;
 }
 
 /** `finish` 的返回值：转正启动的 pending run id（没有则 null）。 */
@@ -79,6 +82,15 @@ export class RepoLock extends DurableObject<Env> {
         // 锁占用：后来者覆盖（push 防抖，最多 1 份待跑）。
         await this.ctx.storage.put(KEY_PENDING, desc);
         return { started: false, coalesced: true };
+      }
+
+      // D10 配额：只拦"新启动"（coalesce/pending 转正属已接收的 run）。
+      const quota = await quotaAllowsNewRun(this.env, desc.installation_id);
+      if (!quota.allowed) {
+        console.warn(
+          `[RepoLock] quota exceeded for installation ${desc.installation_id}: ${quota.used}/${quota.limit} runs today`,
+        );
+        return { started: false, coalesced: false, quotaExceeded: true };
       }
 
       await this.startRun(desc);

@@ -617,6 +617,9 @@ async function optimizeRepo(
     `repo:${access.installationId}/${fullName}`,
   );
   const result = await stub.submit(desc);
+  if (result.quotaExceeded) {
+    return jsonResponse({ error: "quota_exceeded" }, 429);
+  }
 
   return jsonResponse(
     {

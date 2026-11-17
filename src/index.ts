@@ -66,7 +66,13 @@ export default {
         const stub = env.REPO_LOCK.getByName(
           `repo:${desc.installation_id}/${desc.repo}`,
         );
-        await stub.submit(desc);
+        const result = await stub.submit(desc);
+        if (result.quotaExceeded) {
+          // D10 配额：不启动、不重试（ack），运维看日志/仪表盘 429
+          console.warn(
+            `router: quota exceeded, dropping run ${desc.run_id} for ${desc.repo}`,
+          );
+        }
         msg.ack();
       } catch (error) {
         if (isRetryable(error)) {

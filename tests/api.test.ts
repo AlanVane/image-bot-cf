@@ -292,7 +292,7 @@ interface LockCall {
 
 class FakeRepoLock {
   calls: LockCall[] = [];
-  result: { started: boolean; coalesced: boolean } = {
+  result: { started: boolean; coalesced: boolean; quotaExceeded?: boolean } = {
     started: true,
     coalesced: false,
   };
@@ -743,6 +743,21 @@ describe("POST /api/repos/{owner}/{name}/optimize", () => {
         (call) => call.authorization === "Bearer user-token",
       ),
     ).toBe(true);
+  });
+
+  it("配额用尽（D10）→ 429 {error:'quota_exceeded'}", async () => {
+    const harness = makeHarness({ handlers: repoHandlers("o/r") });
+    harness.lock.result = {
+      started: false,
+      coalesced: false,
+      quotaExceeded: true,
+    };
+
+    const res = await callApi(harness, "/api/repos/o/r/optimize", {
+      method: "POST",
+    });
+    expect(res?.status).toBe(429);
+    expect(await res?.json()).toEqual({ error: "quota_exceeded" });
   });
 
   it("锁被占用 → 202 透传 coalesced", async () => {
