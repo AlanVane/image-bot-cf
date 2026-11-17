@@ -38,12 +38,13 @@ export const EMPTY_BODY_MESSAGE =
   "Beep boop. Optimizing your images is my life. https://imgbot.net/ for more information.";
 
 // D7：页脚指向本项目（品牌归属），排版结构与原版一致。
-// TODO(D7): 上线前替换为真实仓库/文档/issue 地址。
-export const DOCS_URL = "https://github.com/OWNER/image-bot-cf/tree/main/Docs";
-export const REPO_URL = "https://github.com/OWNER/image-bot-cf";
-export const ISSUES_URL = "https://github.com/OWNER/image-bot-cf/issues";
-// TODO(D7): 尚未上架 Marketplace，占位为 Marketplace 首页。
-export const MARKETPLACE_URL = "https://github.com/marketplace";
+// 2026-11-17 定稿：真实仓库地址（AlanVane/image-bot-cf）；docs 指 README（用户文档入口）。
+export const DOCS_URL = "https://github.com/AlanVane/image-bot-cf#readme";
+export const REPO_URL = "https://github.com/AlanVane/image-bot-cf";
+export const ISSUES_URL = "https://github.com/AlanVane/image-bot-cf/issues";
+// 未上架 Marketplace（D2/D3 无付费墙）→ 指向本 App 安装/管理页，与仪表盘 installUrl 同址。
+export const MARKETPLACE_URL =
+  "https://github.com/apps/image-bot-cf/installations/new";
 
 /* -------------------------------------------------------------------------- */
 /* .NET 格式化等价                                                             */

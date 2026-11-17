@@ -11,8 +11,10 @@ import {
   formatN2,
   formatPercent,
   ISSUES_URL,
+  MARKETPLACE_URL,
   parseCommitMessage,
   parseStats,
+  REPO_URL,
   roundHalfToEven,
   SIGN_OFF,
 } from "../src/ux/templates";
@@ -179,9 +181,9 @@ describe("commit message", () => {
 
 const footerLine =
   `[📝 docs](${DOCS_URL}) | ` +
-  `[:octocat: repo](https://github.com/OWNER/image-bot-cf) | ` +
+  `[:octocat: repo](${REPO_URL}) | ` +
   `[🙋🏾 issues](${ISSUES_URL}) | ` +
-  `[🏪 marketplace](https://github.com/marketplace)`;
+  `[🏪 marketplace](${MARKETPLACE_URL})`;
 
 describe("PR body", () => {
   // 原版 Test/PullRequestBodyTests.GivenSingleImageCommitMessage_ShouldFormatMarkdownTable

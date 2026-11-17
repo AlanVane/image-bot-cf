@@ -74,6 +74,10 @@
   "triggers": {
     "crons": ["*/30 * * * *", "0 3 * * *"]
   },
+  // 仪表盘 "Install now" 直达安装页（§13.3 installUrl；slug 公开信息非密钥）
+  "vars": {
+    "GITHUB_APP_SLUG": "image-bot-cf"
+  },
   // P3 仪表盘：静态资源与 API 同域；/api/* 先进 Worker，其余交资产层（SPA 兜底）
   "assets": {
     "directory": "./public",
