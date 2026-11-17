@@ -198,6 +198,16 @@ class FakeD1 {
       return row ? [{ enabled: row.enabled ?? 1 }] : [];
     }
 
+    if (norm.startsWith("SELECT repo, value FROM settings")) {
+      const [installationId, key] = args as [number, string];
+      return this.settings
+        .filter(
+          (entry) =>
+            entry.installation_id === installationId && entry.key === key,
+        )
+        .map((entry) => ({ repo: entry.repo, value: entry.value }));
+    }
+
     if (norm.startsWith("SELECT value FROM settings")) {
       const [installationId, repo, key] = args as [number, string, string];
       const row = this.settings.find(
@@ -357,6 +367,7 @@ function makeHarness(options: {
   seed?: Seed;
   handlers: Record<string, FetchHandler>;
   user?: SessionUser | null;
+  appSlug?: string;
 }): Harness {
   const db = new FakeD1(options.seed);
   const lock = new FakeRepoLock();
@@ -366,6 +377,7 @@ function makeHarness(options: {
   const env = {
     DB: db,
     REPO_LOCK: lock,
+    GITHUB_APP_SLUG: options.appSlug,
   } as unknown as Env;
 
   return {
@@ -487,11 +499,25 @@ describe("会话守卫", () => {
     }
   });
 
-  it("GET /api/me → login / userId", async () => {
+  it("GET /api/me → login / userId / installUrl（缺省 null）", async () => {
     const harness = makeHarness({ handlers: {} });
     const res = await callApi(harness, "/api/me");
     expect(res?.status).toBe(200);
-    expect(await res?.json()).toEqual({ login: "octocat", userId: 583231 });
+    expect(await res?.json()).toEqual({
+      login: "octocat",
+      userId: 583231,
+      installUrl: null,
+    });
+  });
+
+  it("GET /api/me → 配置 GITHUB_APP_SLUG 时返回安装页直达链接", async () => {
+    const harness = makeHarness({ handlers: {}, appSlug: "my-imgbot" });
+    const res = await callApi(harness, "/api/me");
+    expect(await res?.json()).toEqual({
+      login: "octocat",
+      userId: 583231,
+      installUrl: "https://github.com/apps/my-imgbot/installations/new",
+    });
   });
 });
 
@@ -542,6 +568,14 @@ describe("GET /api/repos", () => {
           { installation_id: 42, repo: "o/other", pr_number: 3 },
         ],
         repos: [{ installation_id: 42, name: "o/r", enabled: 0 }],
+        settings: [
+          {
+            installation_id: 42,
+            repo: "o/r",
+            key: "default_branch_override",
+            value: "develop",
+          },
+        ],
       },
     });
 
@@ -559,6 +593,7 @@ describe("GET /api/repos", () => {
         lastRunState: null,
         totalSavedBytes: 0,
         prCount: 1,
+        defaultBranchOverride: null,
       },
       {
         fullName: "o/r",
@@ -569,6 +604,7 @@ describe("GET /api/repos", () => {
         lastRunState: "done",
         totalSavedBytes: 2_000,
         prCount: 2,
+        defaultBranchOverride: "develop",
       },
     ]);
 

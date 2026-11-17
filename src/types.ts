@@ -145,4 +145,6 @@ export interface Env {
   /** P3 仪表盘 OAuth（App 页 OAuth credentials 生成）。 */
   GITHUB_CLIENT_ID: string;
   GITHUB_CLIENT_SECRET: string;
+  /** P3 仪表盘 "Install now" 直达安装页（可选；缺省前端兜底到 GitHub 安装管理页）。 */
+  GITHUB_APP_SLUG?: string;
 }

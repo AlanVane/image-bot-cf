@@ -5,3 +5,5 @@ GITHUB_APP_ID=
 GITHUB_PRIVATE_KEY=
 # Webhook secret（App 页面 Webhook secret 字段同一值）
 GITHUB_WEBHOOK_SECRET=
+# （可选）GitHub App slug——仪表盘 "Install now" 直达安装页；缺省兜底到 GitHub 安装管理页
+GITHUB_APP_SLUG=

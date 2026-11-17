@@ -3,8 +3,8 @@
  *
  * 路由（统一 `/api` 前缀，除守卫外全部先 `requireUser`）：
  *
- *   GET  /api/me                              当前会话身份
- *   GET  /api/repos                           用户可见仓库 + D1 聚合统计
+ *   GET  /api/me                              当前会话身份 + App 安装页（installUrl）
+ *   GET  /api/repos                           用户可见仓库 + D1 聚合统计（含分支覆盖）
  *   POST /api/repos/{owner}/{name}/optimize   手动触发（trigger: "manual"）
  *   POST /api/repos/{owner}/{name}/settings   开关 / 默认分支覆盖
  *   GET  /api/repos/{owner}/{name}/stats      run / PR 明细
@@ -45,6 +45,7 @@ export interface ReposApiEntry {
   lastRunState: string | null;
   totalSavedBytes: number;
   prCount: number;
+  defaultBranchOverride: string | null;
 }
 
 /** `POST /api/repos/{owner}/{name}/settings` 的返回体。 */
@@ -152,7 +153,14 @@ export async function handleApiRoute(
 
   try {
     if (route.kind === "me") {
-      return jsonResponse({ login: user.login, userId: user.userId }, 200);
+      return jsonResponse(
+        {
+          login: user.login,
+          userId: user.userId,
+          installUrl: appInstallUrl(env),
+        },
+        200,
+      );
     }
     if (route.kind === "repos") {
       return jsonResponse(await listRepos(env, user, deps), 200);
@@ -192,6 +200,12 @@ export async function handleApiRoute(
     console.error("dashboard api: unexpected failure", error);
     return jsonResponse({ error: "internal_error" }, 500);
   }
+}
+
+/** GitHub App 安装页直达链接；`GITHUB_APP_SLUG` 未配置 → null（前端自行兜底）。 */
+function appInstallUrl(env: Env): string | null {
+  const slug = (env.GITHUB_APP_SLUG ?? "").trim();
+  return slug ? `https://github.com/apps/${slug}/installations/new` : null;
 }
 
 function jsonResponse(body: unknown, status: number): Response {
@@ -441,9 +455,10 @@ interface RepoAggregate {
   totalSavedBytes: number;
   prCount: number;
   enabled: boolean;
+  defaultBranchOverride: string | null;
 }
 
-/** 一次 installation 的 D1 聚合（3 条查询，仓库数无关）。 */
+/** 一次 installation 的 D1 聚合（4 条查询，仓库数无关）。 */
 async function loadRepoAggregates(
   env: Env,
   installationId: number,
@@ -495,6 +510,18 @@ async function loadRepoAggregates(
     ensureAggregate(aggregates, row.name).enabled = row.enabled !== 0;
   }
 
+  // 分支覆盖（`settings.default_branch_override`，NULL/缺行 = 无覆盖）。
+  const branchSettings = await env.DB.prepare(
+    "SELECT repo, value FROM settings WHERE installation_id = ? AND key = ?",
+  )
+    .bind(installationId, SETTING_DEFAULT_BRANCH)
+    .all<{ repo: string; value: string | null }>();
+
+  for (const row of branchSettings.results ?? []) {
+    ensureAggregate(aggregates, row.repo).defaultBranchOverride =
+      typeof row.value === "string" && row.value.length > 0 ? row.value : null;
+  }
+
   return aggregates;
 }
 
@@ -511,6 +538,7 @@ function ensureAggregate(
       totalSavedBytes: 0,
       prCount: 0,
       enabled: true,
+      defaultBranchOverride: null,
     };
     map.set(repo, entry);
   }
@@ -540,6 +568,7 @@ async function listRepos(
         lastRunState: aggregate?.lastRunState ?? null,
         totalSavedBytes: aggregate?.totalSavedBytes ?? 0,
         prCount: aggregate?.prCount ?? 0,
+        defaultBranchOverride: aggregate?.defaultBranchOverride ?? null,
       });
     }
   }
