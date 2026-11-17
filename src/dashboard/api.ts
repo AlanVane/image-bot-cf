@@ -17,7 +17,16 @@
  *   上游拒绝——2026-11-17 真仓实测 502 根因），用 App JWT；两者都过才放行（§4.1）；
  * - fetch 与 `requireUser` 均可注入，便于测试（`ApiDeps`）。
  */
-import { GITHUB_API_BASE, GITHUB_API_VERSION } from "../github/gitdata";
+import {
+  GITHUB_API_BASE,
+  GithubNetworkError,
+  MAX_PAGES,
+  PER_PAGE,
+  REQUEST_TIMEOUT_MS,
+  githubRequest,
+  nextLink,
+  type GithubHttpResult,
+} from "../github/http";
 import type { Env, RunDescriptor } from "../types";
 import { generateAppJwt } from "../github/auth";
 import {
@@ -87,9 +96,6 @@ export interface RepoStats {
   }>;
 }
 
-const MAX_PAGES = 10;
-const PER_PAGE = "100";
-const REQUEST_TIMEOUT_MS = 20_000;
 const RECENT_LIMIT = 20;
 
 const SETTING_DEFAULT_BRANCH = "default_branch_override";
@@ -307,56 +313,38 @@ async function ghRequest(
   const url = pathOrUrl.startsWith("http")
     ? pathOrUrl
     : `${GITHUB_API_BASE}${pathOrUrl}`;
+  const impl = resolveFetch(deps);
 
-  let res: Response;
+  let result: GithubHttpResult;
   try {
-    res = await resolveFetch(deps)(url, {
-      ...init,
-      headers: {
-        authorization: `Bearer ${token}`,
-        accept: "application/vnd.github+json",
-        "x-github-api-version": GITHUB_API_VERSION,
-        "user-agent": "image-bot-cf",
-        ...(init.headers ?? {}),
-      },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    // 裸调用（`impl` 是局部变量）：workerd 下成员调用原生 fetch 会触发
+    // Illegal invocation；注入的 fetch 契约只接受字符串 URL，这里转一次。
+    result = await githubRequest({
+      token,
+      path: url,
+      init,
+      timeoutMs: REQUEST_TIMEOUT_MS,
+      fetchImpl: (input, requestInit) => impl(String(input), requestInit),
     });
   } catch (error) {
+    const reason =
+      error instanceof GithubNetworkError
+        ? error.reason
+        : error instanceof Error
+          ? error.message
+          : String(error);
     throw new GithubRequestError(
       0,
-      `${init.method ?? "GET"} ${url}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      `${init.method ?? "GET"} ${url}: ${reason}`,
     );
   }
 
-  let body: unknown = null;
-  const text = await res.text();
-  if (text.length > 0) {
-    try {
-      body = JSON.parse(text);
-    } catch {
-      body = null;
-    }
-  }
-
   return {
-    status: res.status,
-    ok: res.ok,
-    body,
-    link: res.headers.get("link"),
+    status: result.status,
+    ok: result.ok,
+    body: result.body,
+    link: result.link,
   };
-}
-
-/** RFC 5988 `Link: <…>; rel="next"` → next URL。 */
-function nextLink(header: string | null): string | null {
-  if (!header) return null;
-  for (const part of header.split(",")) {
-    if (!/rel="?next"?/.test(part)) continue;
-    const match = /<([^>]+)>/.exec(part);
-    if (match?.[1]) return match[1];
-  }
-  return null;
 }
 
 function extractArray(body: unknown, field: string): unknown[] {

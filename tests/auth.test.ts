@@ -15,7 +15,10 @@ import {
   SESSION_TTL_SEC,
   STATE_COOKIE,
   STATE_TTL_SEC,
+  TOKEN_REFRESH_WINDOW_MS,
   createAuthHandlers,
+  decryptSecret,
+  encryptSecret,
   handleAuthRoute,
   requireUser,
 } from "../src/dashboard/auth";
@@ -36,6 +39,8 @@ interface SessionRecord {
   user_login: string;
   user_id: number | null;
   user_token: string;
+  refresh_token: string | null;
+  token_expires_at: string | null;
   created_at: string;
   expires_at: string;
 }
@@ -63,6 +68,8 @@ function createDb(): DbHarness {
                   user_login,
                   user_id,
                   user_token,
+                  refresh_token,
+                  token_expires_at,
                   created_at,
                   expires_at,
                 ] = params as [
@@ -70,6 +77,8 @@ function createDb(): DbHarness {
                   string,
                   number | null,
                   string,
+                  string | null,
+                  string | null,
                   string,
                   string,
                 ];
@@ -81,9 +90,25 @@ function createDb(): DbHarness {
                   user_login,
                   user_id,
                   user_token,
+                  refresh_token,
+                  token_expires_at,
                   created_at,
                   expires_at,
                 });
+                return { success: true, meta: { changes: 1 } };
+              }
+              if (sql.includes("UPDATE sessions")) {
+                const [
+                  user_token,
+                  refresh_token,
+                  token_expires_at,
+                  session_id,
+                ] = params as [string, string, string | null, string];
+                const row = rows.get(session_id);
+                if (!row) return { success: true, meta: { changes: 0 } };
+                row.user_token = user_token;
+                row.refresh_token = refresh_token;
+                row.token_expires_at = token_expires_at;
                 return { success: true, meta: { changes: 1 } };
               }
               if (sql.includes("DELETE FROM sessions")) {
@@ -102,6 +127,8 @@ function createDb(): DbHarness {
                 user_login: row.user_login,
                 user_id: row.user_id,
                 user_token: row.user_token,
+                refresh_token: row.refresh_token,
+                token_expires_at: row.token_expires_at,
                 expires_at: row.expires_at,
               } as T;
             },
@@ -133,6 +160,8 @@ function seedSession(
     user_login: "octocat",
     user_id: 583231,
     user_token: "gho_seeded",
+    refresh_token: null,
+    token_expires_at: null,
     created_at: new Date().toISOString(),
     expires_at: new Date(Date.now() + SESSION_TTL_SEC * 1000).toISOString(),
     ...overrides,
@@ -180,6 +209,8 @@ function createFetch(
 function successFetch(
   body: {
     accessToken?: string;
+    refreshToken?: string;
+    expiresIn?: number;
     login?: string;
     userId?: number | null;
   } = {},
@@ -190,6 +221,8 @@ function successFetch(
         access_token: body.accessToken ?? "gho_live_token",
         token_type: "bearer",
         scope: "",
+        ...(body.refreshToken ? { refresh_token: body.refreshToken } : {}),
+        ...(body.expiresIn ? { expires_in: body.expiresIn } : {}),
       });
     }
     if (call.url === "https://api.github.com/user") {
@@ -246,6 +279,26 @@ function authRoute(
     request,
     new URL(request.url),
   );
+}
+
+function sessionRequest(sessionId: string): Request {
+  return new Request(`${ORIGIN}/api/repos`, {
+    headers: { cookie: cookieHeader([SESSION_COOKIE, sessionId]) },
+  });
+}
+
+/** 32 字节测试密钥（base64(ASCII "0123456789abcdef" ×2)）。 */
+const TEST_KEY = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
+
+/** GitHub refresh 端点的标准成功响应。 */
+function refreshResponse(body: Record<string, unknown> = {}): Response {
+  return jsonResponse({
+    access_token: "gho_refreshed",
+    token_type: "bearer",
+    scope: "",
+    expires_in: 28800,
+    ...body,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -640,6 +693,83 @@ describe("GET /api/auth/callback", () => {
     expect(await res!.text()).toContain("GITHUB_CLIENT_ID/SECRET");
     expect(fetchHarness.calls).toHaveLength(0);
   });
+
+  it("token 响应带 refresh_token/expires_in → 一并落库（token_expires_at = now + expires_in）", async () => {
+    const h = createDb();
+    const env = createEnv(h.db);
+    const fetchHarness = successFetch({
+      accessToken: "gho_live_token",
+      refreshToken: "gho_refresh_1",
+      expiresIn: 28800,
+    });
+
+    const url = callbackUrl({ code: "the-code", state: "state-ok" });
+    const res = await authRoute(
+      env,
+      new Request(url, {
+        headers: { cookie: cookieHeader([STATE_COOKIE, "state-ok"]) },
+      }),
+      { fetchImpl: fetchHarness.fetchImpl, now: () => FIXED_NOW },
+    );
+
+    expect(res!.status).toBe(302);
+    const [session] = [...h.rows.values()];
+    expect(session.user_token).toBe("gho_live_token");
+    expect(session.refresh_token).toBe("gho_refresh_1");
+    expect(session.token_expires_at).toBe(
+      new Date(FIXED_NOW + 28800 * 1000).toISOString(),
+    );
+  });
+
+  it("响应不含 refresh_token/expires_in → 两列为 NULL（旧行为不变）", async () => {
+    const h = createDb();
+    const env = createEnv(h.db);
+
+    const url = callbackUrl({ code: "the-code", state: "state-ok" });
+    await authRoute(
+      env,
+      new Request(url, {
+        headers: { cookie: cookieHeader([STATE_COOKIE, "state-ok"]) },
+      }),
+      { fetchImpl: successFetch().fetchImpl, now: () => FIXED_NOW },
+    );
+
+    const [session] = [...h.rows.values()];
+    expect(session.refresh_token).toBeNull();
+    expect(session.token_expires_at).toBeNull();
+  });
+
+  it("配了 SESSION_ENCRYPTION_KEY → 两个 token 都加密落库（可解回原文）", async () => {
+    const h = createDb();
+    const env = createEnv(h.db, { SESSION_ENCRYPTION_KEY: TEST_KEY });
+    const fetchHarness = successFetch({
+      accessToken: "gho_live_token",
+      refreshToken: "gho_refresh_1",
+      expiresIn: 28800,
+    });
+
+    const url = callbackUrl({ code: "the-code", state: "state-ok" });
+    const res = await authRoute(
+      env,
+      new Request(url, {
+        headers: { cookie: cookieHeader([STATE_COOKIE, "state-ok"]) },
+      }),
+      { fetchImpl: fetchHarness.fetchImpl, now: () => FIXED_NOW },
+    );
+
+    expect(res!.status).toBe(302);
+    const [session] = [...h.rows.values()];
+    expect(session.user_token).not.toBe("gho_live_token");
+    expect(session.user_token.startsWith("v1:")).toBe(true);
+    expect(session.refresh_token!.startsWith("v1:")).toBe(true);
+
+    await expect(decryptSecret(TEST_KEY, session.user_token)).resolves.toBe(
+      "gho_live_token",
+    );
+    await expect(decryptSecret(TEST_KEY, session.refresh_token!)).resolves.toBe(
+      "gho_refresh_1",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -753,6 +883,373 @@ describe("requireUser", () => {
     );
 
     expect(user?.userId).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// access token 刷新（requireUser 是唯一收口点）
+// ---------------------------------------------------------------------------
+
+describe("requireUser：access token 刷新", () => {
+  /** 典型"快过期"行：2 分钟后到期，带 refresh token。 */
+  function nearExpiry(
+    overrides: Partial<SessionRecord> = {},
+  ): Partial<SessionRecord> {
+    return {
+      session_id: "refresh-1",
+      user_token: "gho_old",
+      refresh_token: "gho_refresh_old",
+      token_expires_at: new Date(FIXED_NOW + 2 * 60 * 1000).toISOString(),
+      expires_at: new Date(FIXED_NOW + SESSION_TTL_SEC * 1000).toISOString(),
+      ...overrides,
+    };
+  }
+
+  function handlersWith(fetchHarness: FetchHarness) {
+    return createAuthHandlers({
+      fetchImpl: fetchHarness.fetchImpl,
+      now: () => FIXED_NOW,
+    });
+  }
+
+  it("剩余 ≤ 5 分钟 → 换新 token、写回行，调用方拿到新 token", async () => {
+    const h = createDb();
+    const env = createEnv(h.db);
+    seedSession(h, nearExpiry());
+    const fetchHarness = createFetch(() =>
+      refreshResponse({ refresh_token: "gho_refresh_new" }),
+    );
+
+    const user = await handlersWith(fetchHarness).requireUser(
+      env,
+      sessionRequest("refresh-1"),
+    );
+
+    expect(user).toEqual({
+      login: "octocat",
+      userId: 583231,
+      token: "gho_refreshed",
+    });
+    expect(fetchHarness.calls).toHaveLength(1);
+    const [call] = fetchHarness.calls;
+    expect(call.url).toBe("https://github.com/login/oauth/access_token");
+    expect(call.init?.method).toBe("POST");
+    expect((call.init?.headers as Record<string, string>)["content-type"]).toBe(
+      "application/json",
+    );
+    expect(JSON.parse(String(call.init?.body))).toEqual({
+      client_id: CLIENT_ID,
+      client_secret: CLIENT_SECRET,
+      grant_type: "refresh_token",
+      refresh_token: "gho_refresh_old",
+    });
+
+    const row = h.rows.get("refresh-1")!;
+    expect(row.user_token).toBe("gho_refreshed");
+    expect(row.refresh_token).toBe("gho_refresh_new");
+    expect(row.token_expires_at).toBe(
+      new Date(FIXED_NOW + 28800 * 1000).toISOString(),
+    );
+    expect(h.statements.some((sql) => sql.includes("UPDATE sessions"))).toBe(
+      true,
+    );
+  });
+
+  it("窗口边界：恰好剩 5 分钟就刷新；多 1 秒不刷新", async () => {
+    const atBoundary = createDb();
+    seedSession(
+      atBoundary,
+      nearExpiry({
+        token_expires_at: new Date(
+          FIXED_NOW + TOKEN_REFRESH_WINDOW_MS,
+        ).toISOString(),
+      }),
+    );
+    const boundaryFetch = createFetch(() => refreshResponse());
+    const refreshedUser = await handlersWith(boundaryFetch).requireUser(
+      createEnv(atBoundary.db),
+      sessionRequest("refresh-1"),
+    );
+    expect(refreshedUser?.token).toBe("gho_refreshed");
+    expect(boundaryFetch.calls).toHaveLength(1);
+
+    const outside = createDb();
+    seedSession(
+      outside,
+      nearExpiry({
+        token_expires_at: new Date(
+          FIXED_NOW + TOKEN_REFRESH_WINDOW_MS + 1000,
+        ).toISOString(),
+      }),
+    );
+    const outsideFetch = createFetch(() => refreshResponse());
+    const untouchedUser = await handlersWith(outsideFetch).requireUser(
+      createEnv(outside.db),
+      sessionRequest("refresh-1"),
+    );
+    expect(untouchedUser?.token).toBe("gho_old");
+    expect(outsideFetch.calls).toHaveLength(0);
+  });
+
+  it("refresh 被拒（400）→ 删行 + null（前端回登录页）", async () => {
+    const h = createDb();
+    const env = createEnv(h.db);
+    seedSession(h, nearExpiry());
+    const fetchHarness = createFetch(() =>
+      jsonResponse({ error: "bad_refresh_token" }, 400),
+    );
+
+    const user = await handlersWith(fetchHarness).requireUser(
+      env,
+      sessionRequest("refresh-1"),
+    );
+
+    expect(user).toBeNull();
+    expect(h.rows.has("refresh-1")).toBe(false);
+    expect(fetchHarness.calls).toHaveLength(1);
+  });
+
+  it("网络错误两次 → 删行 + null", async () => {
+    const h = createDb();
+    const env = createEnv(h.db);
+    seedSession(h, nearExpiry());
+    const fetchHarness = createFetch(() => {
+      throw new Error("network down");
+    });
+
+    const user = await handlersWith(fetchHarness).requireUser(
+      env,
+      sessionRequest("refresh-1"),
+    );
+
+    expect(user).toBeNull();
+    expect(h.rows.has("refresh-1")).toBe(false);
+    expect(fetchHarness.calls).toHaveLength(2);
+  });
+
+  it("网络抖动一次后重试成功 → 正常换新", async () => {
+    const h = createDb();
+    const env = createEnv(h.db);
+    seedSession(h, nearExpiry());
+    let attempt = 0;
+    const fetchHarness = createFetch(() => {
+      attempt += 1;
+      if (attempt === 1) throw new Error("transient reset");
+      return refreshResponse();
+    });
+
+    const user = await handlersWith(fetchHarness).requireUser(
+      env,
+      sessionRequest("refresh-1"),
+    );
+
+    expect(user?.token).toBe("gho_refreshed");
+    expect(fetchHarness.calls).toHaveLength(2);
+  });
+
+  it("响应未轮换 refresh_token → 沿用旧值", async () => {
+    const h = createDb();
+    const env = createEnv(h.db);
+    seedSession(h, nearExpiry());
+    const fetchHarness = createFetch(() => refreshResponse());
+
+    await handlersWith(fetchHarness).requireUser(
+      env,
+      sessionRequest("refresh-1"),
+    );
+
+    expect(h.rows.get("refresh-1")!.refresh_token).toBe("gho_refresh_old");
+  });
+
+  it("刷新也是裸调用 fetch：严格 this 的实现（复刻 workerd WebIDL）不炸", async () => {
+    const h = createDb();
+    const env = createEnv(h.db);
+    seedSession(h, nearExpiry());
+    const fetchHarness = createFetch(() => refreshResponse());
+    const strictFetch: AuthDeps["fetchImpl"] = function (
+      this: unknown,
+      input,
+      init,
+    ) {
+      if (this !== undefined) {
+        throw new TypeError(
+          "Illegal invocation: function called with incorrect `this` reference.",
+        );
+      }
+      return fetchHarness.fetchImpl!(input, init);
+    };
+
+    const user = await createAuthHandlers({
+      fetchImpl: strictFetch,
+      now: () => FIXED_NOW,
+    }).requireUser(env, sessionRequest("refresh-1"));
+
+    expect(user?.token).toBe("gho_refreshed");
+    expect(fetchHarness.calls).toHaveLength(1);
+  });
+
+  it("legacy 行（无 token_expires_at / refresh_token）→ 不刷新，照旧可用", async () => {
+    const h = createDb();
+    const env = createEnv(h.db);
+    seedSession(h, {
+      session_id: "legacy-1",
+      refresh_token: null,
+      token_expires_at: null,
+    });
+    const fetchHarness = createFetch(() => refreshResponse());
+
+    const user = await handlersWith(fetchHarness).requireUser(
+      env,
+      sessionRequest("legacy-1"),
+    );
+
+    expect(user?.token).toBe("gho_seeded");
+    expect(fetchHarness.calls).toHaveLength(0);
+    expect(h.statements.some((sql) => sql.includes("UPDATE sessions"))).toBe(
+      false,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 会话 token 静态加密（AES-GCM）
+// ---------------------------------------------------------------------------
+
+describe("会话 token 静态加密（AES-GCM）", () => {
+  const OTHER_KEY = btoa("abcdefghijklmnopqrstuvwxyz012345");
+
+  it("encrypt → decrypt 往返；格式 v1:<iv>:<ct>，随机 IV 使两次密文不同", async () => {
+    const first = await encryptSecret(TEST_KEY, "gho_secret");
+    const second = await encryptSecret(TEST_KEY, "gho_secret");
+
+    expect(first.split(":")).toHaveLength(3);
+    expect(first.startsWith("v1:")).toBe(true);
+    expect(first).not.toContain("gho_secret");
+    expect(first).not.toBe(second);
+
+    await expect(decryptSecret(TEST_KEY, first)).resolves.toBe("gho_secret");
+    await expect(decryptSecret(TEST_KEY, second)).resolves.toBe("gho_secret");
+  });
+
+  it("密文被篡改 → null", async () => {
+    const cipher = await encryptSecret(TEST_KEY, "gho_secret");
+    const [prefix, iv, ct] = cipher.split(":");
+    const flipped = (ct[0] === "A" ? "B" : "A") + ct.slice(1);
+    const tampered = `${prefix}:${iv}:${flipped}`;
+
+    await expect(decryptSecret(TEST_KEY, tampered)).resolves.toBeNull();
+    await expect(decryptSecret(OTHER_KEY, cipher)).resolves.toBeNull();
+  });
+
+  it("密文行 + 无 key → 行不可用：删行 + null（安全默认）", async () => {
+    const h = createDb();
+    const env = createEnv(h.db);
+    seedSession(h, {
+      session_id: "enc-nokey",
+      user_token: await encryptSecret(TEST_KEY, "gho_encrypted"),
+    });
+
+    const user = await requireUser(env, sessionRequest("enc-nokey"));
+
+    expect(user).toBeNull();
+    expect(h.rows.has("enc-nokey")).toBe(false);
+    expect(
+      h.statements.some((sql) => sql.includes("DELETE FROM sessions")),
+    ).toBe(true);
+  });
+
+  it("密文行 + 正确 key → 解出明文 token", async () => {
+    const h = createDb();
+    const env = createEnv(h.db, { SESSION_ENCRYPTION_KEY: TEST_KEY });
+    seedSession(h, {
+      session_id: "enc-ok",
+      user_token: await encryptSecret(TEST_KEY, "gho_encrypted"),
+    });
+
+    const user = await requireUser(env, sessionRequest("enc-ok"));
+
+    expect(user?.token).toBe("gho_encrypted");
+    expect(h.rows.has("enc-ok")).toBe(true);
+  });
+
+  it("密文行 + 错误 key → 解不开：删行 + null", async () => {
+    const h = createDb();
+    const env = createEnv(h.db, { SESSION_ENCRYPTION_KEY: OTHER_KEY });
+    seedSession(h, {
+      session_id: "enc-wrongkey",
+      user_token: await encryptSecret(TEST_KEY, "gho_encrypted"),
+    });
+
+    const user = await requireUser(env, sessionRequest("enc-wrongkey"));
+
+    expect(user).toBeNull();
+    expect(h.rows.has("enc-wrongkey")).toBe(false);
+  });
+
+  it("明文行 + 配了 key → 照旧可用（兼容旧数据）", async () => {
+    const h = createDb();
+    const env = createEnv(h.db, { SESSION_ENCRYPTION_KEY: TEST_KEY });
+    seedSession(h, { session_id: "plain-with-key" });
+
+    const user = await requireUser(env, sessionRequest("plain-with-key"));
+
+    expect(user?.token).toBe("gho_seeded");
+    expect(h.rows.get("plain-with-key")!.user_token).toBe("gho_seeded");
+  });
+
+  it("配了 key 时刷新写回密文（明文旧行顺带升级）", async () => {
+    const h = createDb();
+    const env = createEnv(h.db, { SESSION_ENCRYPTION_KEY: TEST_KEY });
+    seedSession(h, {
+      session_id: "upgrade-1",
+      user_token: "gho_old_plain",
+      refresh_token: "gho_refresh_plain",
+      token_expires_at: new Date(FIXED_NOW + 60 * 1000).toISOString(),
+      expires_at: new Date(FIXED_NOW + SESSION_TTL_SEC * 1000).toISOString(),
+    });
+    const fetchHarness = createFetch(() =>
+      refreshResponse({ refresh_token: "gho_refresh_next" }),
+    );
+
+    const user = await createAuthHandlers({
+      fetchImpl: fetchHarness.fetchImpl,
+      now: () => FIXED_NOW,
+    }).requireUser(env, sessionRequest("upgrade-1"));
+
+    expect(user?.token).toBe("gho_refreshed");
+    const row = h.rows.get("upgrade-1")!;
+    expect(row.user_token.startsWith("v1:")).toBe(true);
+    expect(row.refresh_token!.startsWith("v1:")).toBe(true);
+    await expect(decryptSecret(TEST_KEY, row.user_token)).resolves.toBe(
+      "gho_refreshed",
+    );
+    await expect(decryptSecret(TEST_KEY, row.refresh_token!)).resolves.toBe(
+      "gho_refresh_next",
+    );
+  });
+
+  it("刷新请求本身用解密后的 refresh token", async () => {
+    const h = createDb();
+    const env = createEnv(h.db, { SESSION_ENCRYPTION_KEY: TEST_KEY });
+    seedSession(h, {
+      session_id: "enc-refresh",
+      user_token: await encryptSecret(TEST_KEY, "gho_enc_old"),
+      refresh_token: await encryptSecret(TEST_KEY, "gho_refresh_enc"),
+      token_expires_at: new Date(FIXED_NOW + 60 * 1000).toISOString(),
+      expires_at: new Date(FIXED_NOW + SESSION_TTL_SEC * 1000).toISOString(),
+    });
+    const fetchHarness = createFetch(() => refreshResponse());
+
+    await createAuthHandlers({
+      fetchImpl: fetchHarness.fetchImpl,
+      now: () => FIXED_NOW,
+    }).requireUser(env, sessionRequest("enc-refresh"));
+
+    const body = JSON.parse(String(fetchHarness.calls[0].init?.body)) as Record<
+      string,
+      string
+    >;
+    expect(body.refresh_token).toBe("gho_refresh_enc");
   });
 });
 

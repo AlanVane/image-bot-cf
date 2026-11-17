@@ -158,4 +158,10 @@ export interface Env {
   PUBLIC_BASE_URL?: string;
   /** D10 配额：每 installation 每 UTC 日 run 上限；0/缺省 = 不限（字符串 vars）。 */
   QUOTA_DAILY_RUNS?: string;
+  /**
+   * 会话 token 静态加密密钥：base64(32 random bytes)，经 `wrangler secret` 设置。
+   * 缺省 = 明文开发模式；配置后 `sessions.user_token` / `refresh_token` 以
+   * AES-256-GCM 密文（`v1:<iv-b64>:<ct-b64>`）落库。
+   */
+  SESSION_ENCRYPTION_KEY?: string;
 }

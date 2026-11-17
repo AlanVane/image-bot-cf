@@ -45,6 +45,7 @@
 | D12 | P1 护栏四件套（2026-11-18）：① 容器输入硬上限 40MB 原始字节（body 55MB 含 base64 余量，两段对齐）+ sharp 并发/像素上限显式化；② 扫树截断写 `runs.error`（不失败）+ 截断树丢重放**显式失败**（`truncated_tree_lost_replays`，修掉静默回滚）；③ PR 载荷预算 500 图/10MB（含重放，预检在读 blob 前）超限显式失败（`pr_payload_too_large`）；④ 30 分钟巡检改扫 D1 有史仓（runs∪repos∪pulls，90d 窗），调用量 O(全仓)→O(有史仓)（实测口径 ~254→~5 次/轮）+ 分页截断告警 | oracle P2-8/P2-9/P2-12/P1-5；D5 单提交不变式排除分块提交，巨仓分批 PR 记为后续增强；每日 schedule 全仓巡检未动（低频，留观） |
 | D13 | P2 三件套（2026-11-18）：① 自托管 `/docs/` 文档页（替换 imgbot.net/docs 外链——上游有"仅付费"等失实措辞；`.imgbotconfig` 全字段 + ignoredFiles 五例，prTitle/prBody 明示本构建免费）；② `listRepos` 聚合下沉 SQL（`ROW_NUMBER()` 最近 run + `GROUP BY` 节省量，语义与旧 JS 逐条对齐含负值不 clamp）；③ Playwright 前端 e2e（18 例/5 spec，静态伺服 + mock API，CI 增 e2e 任务） | 原 D9 的外链尾巴就此闭环；e2e 用 mock 隔离后端（后端已有 447 单测） |
 | D14 | 自称层品牌改名 **ImageBot**（2026-11-18 用户决策）：登录页/仪表盘/文档页的自称与营销文案弃用原版名；契约层不动（`[ImgBot] Optimize images` 模板、`.imgbotconfig`、`imgbot` 分支、DCO 签名仍逐字对等） | 本项目是独立重建（GitHub App: Image-Bot-CF），顶原版名自称有误导/商标风险，也添品牌混淆信号（Safe Browsing 误判同源） |
+| D15 | user-token 生命周期补完（2026-11-18）：refresh token 轮换（`requireUser` 单点收口，剩余 ≤5min 即换，失败删会话）+ AES-256-GCM 静态加密（`SESSION_ENCRYPTION_KEY` secret，`v1:` 前缀格式；明文/密文/无 key 兼容矩阵见 SECURITY.md） | 补完 P0 只做的 401 强制重登（oracle P3-13 全量）+ P3-14；已知限并：并发刷新竞态窗口（单请求串行无影响）、legacy 明文行下次刷新时顺带升级 |
 
 ---
 

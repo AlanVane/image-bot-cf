@@ -12,7 +12,7 @@
  *      失败只记日志，绝不拖慢/污染主流程。
  */
 import { getInstallationToken } from "../github/auth";
-import { GITHUB_API_BASE, GITHUB_API_VERSION } from "../github/gitdata";
+import { githubRequest } from "../github/http";
 import type { Env } from "../types";
 import {
   parseDeliveryHeaders,
@@ -150,22 +150,12 @@ async function deleteImgbotBranch(
     privateKeyPem: env.GITHUB_PRIVATE_KEY,
   });
 
-  const url =
-    `${GITHUB_API_BASE}/repos/${encodeURIComponent(owner)}/` +
-    `${encodeURIComponent(repo)}/git/refs/heads/${IMBOT_BRANCH}`;
-  const fetchImpl = globalThis.fetch;
-  if (typeof fetchImpl !== "function") {
-    throw new Error("deleteImgbotBranch requires a fetch implementation");
-  }
-
-  const res = await fetchImpl(url, {
-    method: "DELETE",
-    headers: {
-      authorization: `Bearer ${token}`,
-      accept: "application/vnd.github+json",
-      "x-github-api-version": GITHUB_API_VERSION,
-      "user-agent": "image-bot-cf",
-    },
+  const res = await githubRequest({
+    token,
+    path:
+      `/repos/${encodeURIComponent(owner)}/` +
+      `${encodeURIComponent(repo)}/git/refs/heads/${IMBOT_BRANCH}`,
+    init: { method: "DELETE" },
   });
 
   // 404：分支已不存在（重复投递/已清理），视为成功。
