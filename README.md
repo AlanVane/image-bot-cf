@@ -48,7 +48,7 @@ Place it at the repository root (all fields optional):
 
 - `schedule`: `daily` | `weekly` | `monthly` — periodic re-optimization
 - `ignoredFiles`: glob patterns (case-insensitive), `*` does not cross `/`
-- `minKBReduced`: minimum total KB saved to open/update a PR (default 10; `0` = no threshold)
+- `minKBReduced`: minimum total KB saved to open/update a PR (default 10; `0` or `null` = no threshold)
 - `aggressiveCompression`: switch JPEG/PNG/GIF to lossy variants
 
 ## Development

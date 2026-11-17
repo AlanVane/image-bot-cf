@@ -81,6 +81,16 @@ describe("parseImgbotConfig：字段语义（§2.3）", () => {
     expect(parseImgbotConfig('{"minKBReduced":-5}').minKBReduced).toBe(-5);
   });
 
+  it("minKBReduced: null = 禁用阈值（官方文档语义，归一为 0）", () => {
+    // imgbot.net/docs 明写 `"minKBReduced": null` 关闭阈值；此前解析器忽略
+    // null 导致默认 10 残留（2026-11-18 文档研究发现的对拍缺口）。
+    expect(parseImgbotConfig('{"minKBReduced":null}').minKBReduced).toBe(0);
+    expect(
+      parseImgbotConfig('{"schedule":"daily","minKBReduced":null}')
+        .minKBReduced,
+    ).toBe(0);
+  });
+
   it("非法 schedule 退化为 null；非法类型不污染其他字段", () => {
     const config = parseImgbotConfig(
       '{"schedule":"hourly","minKBReduced":"20","aggressiveCompression":"yes","ignoredFiles":"*.png"}',

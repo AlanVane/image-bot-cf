@@ -90,7 +90,11 @@ export function parseImgbotConfig(raw: string | null | undefined): RepoConfig {
     config.compressWiki = obj.compressWiki;
   }
 
-  if (
+  if (obj.minKBReduced === null) {
+    // 官方文档语义：null = 禁用阈值（"always open a PR no matter how much
+    // size is reduced"）→ 归一为 0，由 thresholdGate 的 <=0 语义消费。
+    config.minKBReduced = 0;
+  } else if (
     typeof obj.minKBReduced === "number" &&
     Number.isFinite(obj.minKBReduced)
   ) {
