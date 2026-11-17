@@ -1,0 +1,28 @@
+{
+  "name": "image-bot-cf",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Imgbot-compatible image optimization bot, rebuilt on Cloudflare (see DESIGN.md)",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "db:local": "wrangler d1 execute image-bot-db --file db/schema.sql --local"
+  },
+  "dependencies": {
+    "@jsquash/jpeg": "^1.6.0",
+    "@jsquash/png": "^3.1.1",
+    "gifenc": "^1.0.3",
+    "omggif": "^1.0.10",
+    "svgo": "^4.1.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261116.1",
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0",
+    "wrangler": "^4.162.0"
+  }
+}

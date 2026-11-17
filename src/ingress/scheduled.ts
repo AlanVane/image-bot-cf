@@ -1,0 +1,535 @@
+/**
+ * cron 编排（DESIGN.md §2.1 / §2.3 / §2.4）—— 两个 sweep 的 I/O 部分。
+ *
+ *   每 30 分钟  → `runPrPoisonSweep`：卡死 PR 巡检（原版 `PrPoisonHandler`）
+ *   每日 03:00 → `runScheduleSweep`：`.imgbotconfig` 的 schedule 重优化
+ *
+ * 判定/解析逻辑全部在 `./scheduled-logic.ts`（纯函数）；本文件只做
+ * GitHub API / D1 / Queue 访问。单个仓库失败只记日志，不中断整轮。
+ */
+import { generateAppJwt, getInstallationToken } from "../github/auth";
+import {
+  GITHUB_API_BASE,
+  GITHUB_API_VERSION,
+  toGithubApiError,
+} from "../github/gitdata";
+import { parseImgbotConfig } from "../config/imgbotconfig";
+import type { Env } from "../types";
+import {
+  IMBOT_BRANCH,
+  buildRecoveredPr,
+  parseInstallationIds,
+  parseInstallationRepos,
+  prOverridesFromConfig,
+  scheduleGate,
+  shouldRebuildPr,
+  type CommitAuthorLike,
+} from "./scheduled-logic";
+
+/** wrangler.jsonc `triggers.crons` 的两条表达式。 */
+export const CRON_PR_POISON = "*/30 * * * *";
+export const CRON_SCHEDULE = "0 3 * * *";
+
+/** 分页上限：100 条/页 × 10 页，足够覆盖 P2 规模且防止死循环。 */
+const MAX_PAGES = 10;
+const PER_PAGE = "100";
+const REQUEST_TIMEOUT_MS = 20_000;
+
+const CONFIG_PATH = ".imgbotconfig";
+
+/* -------------------------------------------------------------------------- */
+/* HTTP helpers                                                                */
+/* -------------------------------------------------------------------------- */
+
+type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+
+function fetchImpl(): FetchLike {
+  const impl = globalThis.fetch;
+  if (typeof impl !== "function") {
+    throw new Error("cron sweep requires a fetch implementation");
+  }
+  // 裸调用：workerd 下以成员调用原生 fetch 会触发 Illegal invocation。
+  return (input, init) => impl(input, init);
+}
+
+function githubHeaders(
+  token: string,
+  accept = "application/vnd.github+json",
+): Record<string, string> {
+  return {
+    authorization: `Bearer ${token}`,
+    accept,
+    "x-github-api-version": GITHUB_API_VERSION,
+    "user-agent": "image-bot-cf",
+  };
+}
+
+/** GET/POST 统一入口；非 2xx 抛 `GithubApiError`（404 由 `requestOrNull` 吞掉）。 */
+async function request(
+  token: string,
+  pathOrUrl: string,
+  init: RequestInit = {},
+  accept?: string,
+): Promise<Response> {
+  const url = pathOrUrl.startsWith("http")
+    ? pathOrUrl
+    : `${GITHUB_API_BASE}${pathOrUrl}`;
+  const method = init.method ?? "GET";
+
+  let res: Response;
+  try {
+    res = await fetchImpl()(url, {
+      ...init,
+      headers: { ...githubHeaders(token, accept), ...(init.headers ?? {}) },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (err) {
+    throw new Error(
+      `GitHub ${method} ${pathOrUrl} network error: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+  if (!res.ok) throw await toGithubApiError(res, method, pathOrUrl);
+  return res;
+}
+
+/** 404 → null（分支/文件不存在是正常状态，不是错误）。 */
+async function requestOrNull(
+  token: string,
+  pathOrUrl: string,
+  accept?: string,
+): Promise<Response | null> {
+  try {
+    return await request(token, pathOrUrl, {}, accept);
+  } catch (err) {
+    if ((err as { status?: unknown }).status === 404) return null;
+    throw err;
+  }
+}
+
+/** RFC 5988 `Link: <…>; rel="next"` → next URL。 */
+function nextLink(header: string | null): string | null {
+  if (!header) return null;
+  for (const part of header.split(",")) {
+    if (!/rel="?next"?/.test(part)) continue;
+    const match = /<([^>]+)>/.exec(part);
+    if (match?.[1]) return match[1];
+  }
+  return null;
+}
+
+function encodeSegment(value: string): string {
+  return encodeURIComponent(value);
+}
+
+function repoPath(owner: string, repo: string, suffix = ""): string {
+  return `/repos/${encodeSegment(owner)}/${encodeSegment(repo)}${suffix}`;
+}
+
+function splitRepo(fullName: string): { owner: string; repo: string } | null {
+  const slash = fullName.indexOf("/");
+  if (slash <= 0 || slash === fullName.length - 1) return null;
+  return {
+    owner: fullName.slice(0, slash),
+    repo: fullName.slice(slash + 1),
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* 枚举 installations / repositories                                           */
+/* -------------------------------------------------------------------------- */
+
+async function listInstallationIds(env: Env): Promise<number[]> {
+  const jwt = await generateAppJwt(env.GITHUB_APP_ID, env.GITHUB_PRIVATE_KEY);
+  const ids: number[] = [];
+  let url: string | null =
+    `${GITHUB_API_BASE}/app/installations?per_page=${PER_PAGE}`;
+
+  for (let page = 0; url && page < MAX_PAGES; page += 1) {
+    const res = await request(jwt, url);
+    ids.push(...parseInstallationIds(await res.json()));
+    url = nextLink(res.headers.get("link"));
+  }
+  return ids;
+}
+
+async function installationToken(
+  env: Env,
+  installationId: number,
+): Promise<string> {
+  const { token } = await getInstallationToken({
+    installationId,
+    appId: env.GITHUB_APP_ID,
+    privateKeyPem: env.GITHUB_PRIVATE_KEY,
+  });
+  return token;
+}
+
+async function listInstallationRepos(
+  token: string,
+): Promise<Array<{ repo: string; defaultBranch: string | null }>> {
+  const repos: Array<{ repo: string; defaultBranch: string | null }> = [];
+  let url: string | null =
+    `${GITHUB_API_BASE}/installation/repositories?per_page=${PER_PAGE}`;
+
+  for (let page = 0; url && page < MAX_PAGES; page += 1) {
+    const res = await request(token, url);
+    repos.push(...parseInstallationRepos(await res.json()));
+    url = nextLink(res.headers.get("link"));
+  }
+  return repos;
+}
+
+async function resolveDefaultBranch(
+  token: string,
+  owner: string,
+  repo: string,
+  known: string | null,
+): Promise<string | null> {
+  if (known) return known;
+  const res = await requestOrNull(token, repoPath(owner, repo));
+  if (!res) return null;
+  const body = (await res.json()) as { default_branch?: unknown };
+  return typeof body.default_branch === "string" && body.default_branch
+    ? body.default_branch
+    : null;
+}
+
+/**
+ * 取默认分支根目录下的文本文件（`.imgbotconfig`）。
+ * 先列根树拿 blob sha，再按 raw 取内容：缺文件/空仓库 → null。
+ */
+async function fetchRootFileText(
+  token: string,
+  owner: string,
+  repo: string,
+  ref: string,
+): Promise<string | null> {
+  const treeRes = await requestOrNull(
+    token,
+    repoPath(owner, repo, `/git/trees/${ref}`),
+  );
+  if (!treeRes) return null;
+
+  const body = (await treeRes.json()) as {
+    tree?: Array<{ path?: unknown; type?: unknown; sha?: unknown }>;
+  };
+  const entry = (body.tree ?? []).find(
+    (item) => item.path === CONFIG_PATH && item.type === "blob",
+  );
+  if (!entry || typeof entry.sha !== "string" || !entry.sha) return null;
+
+  // accept=raw 必须单独传：默认 header 是 JSON，会返回 base64 包装体。
+  const blobRes = await requestOrNull(
+    token,
+    repoPath(owner, repo, `/git/blobs/${encodeSegment(entry.sha)}`),
+    "application/vnd.github.raw",
+  );
+  if (!blobRes) return null;
+  return new TextDecoder().decode(await blobRes.arrayBuffer());
+}
+
+/* -------------------------------------------------------------------------- */
+/* ② schedule 重优化 sweep                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 每日 sweep：对每个已安装仓库读 `.imgbotconfig`，`schedule` 开启且门限通过
+ * 则投递一条 `trigger: "schedule"` 的描述符。
+ */
+export async function runScheduleSweep(
+  env: Env,
+  now: Date = new Date(),
+): Promise<void> {
+  let installationIds: number[];
+  try {
+    installationIds = await listInstallationIds(env);
+  } catch (error) {
+    console.error("schedule sweep: list installations failed", error);
+    return;
+  }
+
+  for (const installationId of installationIds) {
+    let token: string;
+    let repos: Array<{ repo: string; defaultBranch: string | null }>;
+    try {
+      token = await installationToken(env, installationId);
+      repos = await listInstallationRepos(token);
+    } catch (error) {
+      console.error(
+        `schedule sweep: installation ${installationId} failed`,
+        error,
+      );
+      continue;
+    }
+
+    for (const entry of repos) {
+      try {
+        await maybeScheduleRepo(env, token, installationId, entry, now);
+      } catch (error) {
+        console.error(`schedule sweep: repo ${entry.repo} failed`, error);
+      }
+    }
+  }
+}
+
+async function maybeScheduleRepo(
+  env: Env,
+  token: string,
+  installationId: number,
+  entry: { repo: string; defaultBranch: string | null },
+  now: Date,
+): Promise<void> {
+  const split = splitRepo(entry.repo);
+  if (!split) return;
+
+  const baseRef = await resolveDefaultBranch(
+    token,
+    split.owner,
+    split.repo,
+    entry.defaultBranch,
+  );
+  if (!baseRef) return;
+
+  const configText = await fetchRootFileText(
+    token,
+    split.owner,
+    split.repo,
+    baseRef,
+  );
+  const config = parseImgbotConfig(configText);
+  if (!config.schedule) return;
+
+  const lastRunAt = await lastRunAtFor(env, installationId, entry.repo);
+  if (!scheduleGate(config.schedule, lastRunAt, now)) return;
+
+  // D8：门限只看运行史；base_sha 留给 Workflow 自己解析，避免这里多烧一次调用。
+  await env.ROUTER.send(
+    {
+      run_id: crypto.randomUUID(),
+      installation_id: installationId,
+      repo: entry.repo,
+      trigger: "schedule",
+      base_ref: baseRef,
+    },
+    { contentType: "json" },
+  );
+}
+
+/** 该仓库最近一次任意 run 的创建时间（D8 门限输入）。 */
+async function lastRunAtFor(
+  env: Env,
+  installationId: number,
+  repo: string,
+): Promise<string | null> {
+  const row = await env.DB.prepare(
+    "SELECT created_at FROM runs WHERE installation_id = ? AND repo = ? " +
+      "ORDER BY created_at DESC LIMIT 1",
+  )
+    .bind(installationId, repo)
+    .first<{ created_at: string }>();
+  return row?.created_at ?? null;
+}
+
+/* -------------------------------------------------------------------------- */
+/* ③ 卡死 PR 巡检 sweep                                                        */
+/* -------------------------------------------------------------------------- */
+
+/** 每 30 分钟：有 `imgbot` 分支、无 open PR、tip 是 bot → 从 commit message 重建 PR。 */
+export async function runPrPoisonSweep(env: Env): Promise<void> {
+  let installationIds: number[];
+  try {
+    installationIds = await listInstallationIds(env);
+  } catch (error) {
+    console.error("pr poison sweep: list installations failed", error);
+    return;
+  }
+
+  for (const installationId of installationIds) {
+    let token: string;
+    let repos: Array<{ repo: string; defaultBranch: string | null }>;
+    try {
+      token = await installationToken(env, installationId);
+      repos = await listInstallationRepos(token);
+    } catch (error) {
+      console.error(
+        `pr poison sweep: installation ${installationId} failed`,
+        error,
+      );
+      continue;
+    }
+
+    for (const entry of repos) {
+      try {
+        await recoverRepoPr(token, entry);
+      } catch (error) {
+        console.error(`pr poison sweep: repo ${entry.repo} failed`, error);
+      }
+    }
+  }
+}
+
+interface PullSummary {
+  number: number;
+  closedAt: string | null;
+  updatedAt: string | null;
+}
+
+async function listPulls(
+  token: string,
+  owner: string,
+  repo: string,
+  params: Record<string, string>,
+): Promise<PullSummary[]> {
+  const query = new URLSearchParams({ per_page: PER_PAGE, ...params });
+  const res = await request(
+    token,
+    `${repoPath(owner, repo, "/pulls")}?${query.toString()}`,
+  );
+  const body = (await res.json()) as unknown;
+  if (!Array.isArray(body)) return [];
+
+  const pulls: PullSummary[] = [];
+  for (const item of body) {
+    if (item === null || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    if (typeof record.number !== "number") continue;
+    pulls.push({
+      number: record.number,
+      closedAt: typeof record.closed_at === "string" ? record.closed_at : null,
+      updatedAt:
+        typeof record.updated_at === "string" ? record.updated_at : null,
+    });
+  }
+  return pulls;
+}
+
+interface TipCommit {
+  message: string | null;
+  author: CommitAuthorLike;
+  committedAt: string | null;
+}
+
+async function fetchTipCommit(
+  token: string,
+  owner: string,
+  repo: string,
+  ref: string,
+): Promise<TipCommit | null> {
+  const res = await requestOrNull(
+    token,
+    repoPath(owner, repo, `/commits/${encodeSegment(ref)}`),
+  );
+  if (!res) return null;
+
+  const body = (await res.json()) as {
+    commit?: {
+      message?: unknown;
+      author?: { name?: unknown; email?: unknown; date?: unknown };
+      committer?: { date?: unknown };
+    };
+    author?: { login?: unknown; type?: unknown } | null;
+  };
+
+  const commitAuthor = body.commit?.author;
+  const message =
+    typeof body.commit?.message === "string" ? body.commit.message : null;
+  return {
+    message,
+    author: {
+      name: typeof commitAuthor?.name === "string" ? commitAuthor.name : null,
+      email:
+        typeof commitAuthor?.email === "string" ? commitAuthor.email : null,
+      login: typeof body.author?.login === "string" ? body.author.login : null,
+      type: typeof body.author?.type === "string" ? body.author.type : null,
+    },
+    committedAt:
+      typeof commitAuthor?.date === "string"
+        ? commitAuthor.date
+        : typeof body.commit?.committer?.date === "string"
+          ? body.commit.committer.date
+          : null,
+  };
+}
+
+async function recoverRepoPr(
+  token: string,
+  entry: { repo: string; defaultBranch: string | null },
+): Promise<void> {
+  const split = splitRepo(entry.repo);
+  if (!split) return;
+  const { owner, repo } = split;
+
+  // ① `heads/imgbot` 必须存在；404 即无事可做。
+  const refRes = await requestOrNull(
+    token,
+    repoPath(owner, repo, `/git/ref/heads/${IMBOT_BRANCH}`),
+  );
+  if (!refRes) return;
+
+  // ② 已有 head=imgbot 的 open PR → 不重复开。
+  const openPulls = await listPulls(token, owner, repo, {
+    state: "open",
+    head: `${owner}:${IMBOT_BRANCH}`,
+    per_page: "1",
+  });
+  if (openPulls.length > 0) return;
+
+  // ③ tip 作者必须是 bot（人类动过的分支不碰，§2.1）。
+  const tip = await fetchTipCommit(token, owner, repo, IMBOT_BRANCH);
+  if (!tip) return;
+
+  // ④ 分支比最近一次 closed PR 旧 → 不重建（原版语义）。
+  const closedPulls = await listPulls(token, owner, repo, {
+    state: "closed",
+    head: `${owner}:${IMBOT_BRANCH}`,
+    sort: "updated",
+    direction: "desc",
+    per_page: "1",
+  });
+  const lastClosed = closedPulls[0] ?? null;
+
+  if (
+    !shouldRebuildPr({
+      branchExists: true,
+      hasOpenPull: false,
+      tipAuthor: tip.author,
+      tipCommittedAt: tip.committedAt,
+      lastClosedPrAt: lastClosed?.closedAt ?? lastClosed?.updatedAt ?? null,
+    })
+  ) {
+    return;
+  }
+
+  // ⑤ 重建 PR 内容：`.imgbotconfig` 的 prTitle/prBody 覆盖 + commit message 统计。
+  const baseRef = await resolveDefaultBranch(
+    token,
+    owner,
+    repo,
+    entry.defaultBranch,
+  );
+  if (!baseRef) return;
+
+  const configText = await fetchRootFileText(token, owner, repo, baseRef);
+  const content = buildRecoveredPr(
+    tip.message,
+    prOverridesFromConfig(configText),
+  );
+  if (!content) return;
+
+  const res = await request(token, repoPath(owner, repo, "/pulls"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      title: content.title,
+      body: content.body,
+      head: IMBOT_BRANCH,
+      base: baseRef,
+    }),
+  });
+  const created = (await res.json()) as { number?: unknown };
+  console.log(
+    `pr poison sweep: recreated PR #${String(created.number)} for ${entry.repo}`,
+  );
+}

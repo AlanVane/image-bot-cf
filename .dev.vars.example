@@ -1,0 +1,7 @@
+# 复制为 .dev.vars 填写（已被 .gitignore 忽略，勿提交真凭据）
+# GitHub App 凭据：Settings → Developer settings → GitHub Apps → 你的 App
+GITHUB_APP_ID=
+# PEM 全文（含 BEGIN/END 行，换行可写成 \n 或保持多行）
+GITHUB_PRIVATE_KEY=
+# Webhook secret（App 页面 Webhook secret 字段同一值）
+GITHUB_WEBHOOK_SECRET=
