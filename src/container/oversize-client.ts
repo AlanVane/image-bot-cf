@@ -4,12 +4,14 @@
  * 唯一职责：把一张超大图送进容器优化，**永不抛错**。
  * 任何失败（容器没起、超时、5xx、协议不符）都收敛成 `optimized: null`，
  * 调用方按 `too_large` / 跳过处理——单图失败绝不能炸掉整个 run（§5.3 块内 try/catch）。
+ * 输入 >`MAX_CONTAINER_INPUT_BYTES`（40MB）在本地就拒绝，连 base64 都不构造。
  *
  * 传输：POST `/optimize`，JSON `{ path, bytes: base64, aggressive }`。
  * （DESIGN §6.3 原文提到"传 R2 key 不传字节"；本实现按 Wave 3 任务书走 base64 直传，
  *   容器无状态、无 R2 绑定；如后续改为 R2 key，只需换本文件的请求体构造。）
  */
 import { getRandom } from "@cloudflare/containers";
+import { MAX_CONTAINER_INPUT_BYTES } from "./limits";
 import type { ImageContainer } from "./image-container";
 
 /** 容器绑定（wrangler.jsonc containers + durable_objects 双声明）。 */
@@ -74,7 +76,7 @@ interface ContainerResponse {
 }
 
 /**
- * 送一张图进容器。失败/超时/无收益 → `optimized: null`（绝不抛错）。
+ * 送一张图进容器。失败/超时/无收益/超硬上限 → `optimized: null`（绝不抛错）。
  * HTTP 失败（5xx / 网络）重试 1 次；超时不再重试（省掉第二次 60s 空转）。
  */
 export async function optimizeViaContainer(
@@ -83,6 +85,11 @@ export async function optimizeViaContainer(
   bytes: Uint8Array,
   aggressive: boolean,
 ): Promise<OversizeResult> {
+  // 硬上限在**碰绑定之前**判：>40MB 的图不值得 base64 膨胀与容器内存，调用方按 too_large 跳过。
+  if (bytes.length > MAX_CONTAINER_INPUT_BYTES) {
+    return { optimized: null, tool: "error:input_too_large" };
+  }
+
   if (!env?.IMAGE_CONTAINER) {
     return { optimized: null, tool: "error:no_binding" };
   }

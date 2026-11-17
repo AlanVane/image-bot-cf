@@ -2,6 +2,7 @@
  * cron 编排（DESIGN.md §2.1 / §2.3 / §2.4）—— 两个 sweep 的 I/O 部分。
  *
  *   每 30 分钟  → `runPrPoisonSweep`：卡死 PR 巡检（原版 `PrPoisonHandler`）
+ *                 目标集只来自 D1（我们碰过的仓库），不枚举 installation
  *   每日 03:00 → `runScheduleSweep`：`.imgbotconfig` 的 schedule 重优化
  *
  * 判定/解析逻辑全部在 `./scheduled-logic.ts`（纯函数）；本文件只做
@@ -22,8 +23,12 @@ import {
   parseInstallationRepos,
   prOverridesFromConfig,
   scheduleGate,
+  selectSweepTargets,
   shouldRebuildPr,
   type CommitAuthorLike,
+  type SweepRepoRow,
+  type SweepRunRow,
+  type SweepTarget,
 } from "./scheduled-logic";
 
 /** wrangler.jsonc `triggers.crons` 的两条表达式。 */
@@ -151,6 +156,12 @@ async function listInstallationIds(env: Env): Promise<number[]> {
     ids.push(...parseInstallationIds(await res.json()));
     url = nextLink(res.headers.get("link"));
   }
+  if (url) {
+    console.warn(
+      `cron: installation listing truncated at MAX_PAGES=${MAX_PAGES} ` +
+        `(${ids.length} installations seen); remaining installations skipped`,
+    );
+  }
   return ids;
 }
 
@@ -168,6 +179,7 @@ async function installationToken(
 
 async function listInstallationRepos(
   token: string,
+  installationId: number,
 ): Promise<Array<{ repo: string; defaultBranch: string | null }>> {
   const repos: Array<{ repo: string; defaultBranch: string | null }> = [];
   let url: string | null =
@@ -177,6 +189,13 @@ async function listInstallationRepos(
     const res = await request(token, url);
     repos.push(...parseInstallationRepos(await res.json()));
     url = nextLink(res.headers.get("link"));
+  }
+  if (url) {
+    // 分页见底还有 next：明确记录被截断的 installation，别静默少扫。
+    console.warn(
+      `cron: installation ${installationId} repository listing truncated at ` +
+        `MAX_PAGES=${MAX_PAGES} (${repos.length} repos seen); remaining repos skipped`,
+    );
   }
   return repos;
 }
@@ -255,7 +274,7 @@ export async function runScheduleSweep(
     let repos: Array<{ repo: string; defaultBranch: string | null }>;
     try {
       token = await installationToken(env, installationId);
-      repos = await listInstallationRepos(token);
+      repos = await listInstallationRepos(token, installationId);
     } catch (error) {
       console.error(
         `schedule sweep: installation ${installationId} failed`,
@@ -336,38 +355,103 @@ async function lastRunAtFor(
 /* ③ 卡死 PR 巡检 sweep                                                        */
 /* -------------------------------------------------------------------------- */
 
-/** 每 30 分钟：有 `imgbot` 分支、无 open PR、tip 是 bot → 从 commit message 重建 PR。 */
-export async function runPrPoisonSweep(env: Env): Promise<void> {
-  let installationIds: number[];
+/**
+ * 每 30 分钟：有 `imgbot` 分支、无 open PR、tip 是 bot → 从 commit message 重建 PR。
+ *
+ * **目标集只来自 D1**（P1 加固 #5）：不再枚举 installation / repository，只巡
+ * 「我们碰过」的仓库（`selectSweepTargets` 的 runs/repos/pulls 并集）。
+ *
+ * GitHub 调用预算对比（一个装了 N 个仓库、其中 M 个有历史的 installation）：
+ *
+ *   旧：每轮 1×列 installations + 每 installation 1×token + ⌈N/100⌉×仓库分页
+ *       + N×≥1（每仓库至少查一次 `heads/imgbot`）；30 分钟一轮 ≈ 48 轮/天，
+ *       即 ≥48×N 次调用/天（N 大时仓库分页还会静默截断）。
+ *   新：每轮 0×列 installations + 每 installation 1×token + M×1..4（有 PR 重建
+ *       才走后面几步）。仓库每 30 分钟不再无条件被查 → O(有历史的仓库)，
+ *       而非 O(全部已安装仓库)。
+ *
+ * 代价（有意接受）：D1 里已卸载/改名的仓库仍会被巡——卸载的 installation
+ * 在取 token 时 403，只留一条日志（每轮 1 次失败调用），不再扩散到全仓扫描。
+ */
+export async function runPrPoisonSweep(
+  env: Env,
+  now: Date = new Date(),
+): Promise<void> {
+  let targets: SweepTarget[];
   try {
-    installationIds = await listInstallationIds(env);
+    targets = selectSweepTargets(await loadSweepSources(env), now);
   } catch (error) {
-    console.error("pr poison sweep: list installations failed", error);
+    console.error("pr poison sweep: load D1 targets failed", error);
     return;
   }
 
-  for (const installationId of installationIds) {
+  if (targets.length === 0) {
+    console.log("pr poison sweep: no D1 history, nothing to sweep");
+    return;
+  }
+  console.log(`pr poison sweep: ${targets.length} target repo(s)`);
+
+  // 按 installation 分组：每个 installation 只换一次 token，一个目标失败不连坐。
+  const grouped = new Map<number, SweepTarget[]>();
+  for (const target of targets) {
+    const group = grouped.get(target.installationId);
+    if (group) group.push(target);
+    else grouped.set(target.installationId, [target]);
+  }
+
+  for (const [installationId, group] of grouped) {
     let token: string;
-    let repos: Array<{ repo: string; defaultBranch: string | null }>;
     try {
       token = await installationToken(env, installationId);
-      repos = await listInstallationRepos(token);
     } catch (error) {
       console.error(
-        `pr poison sweep: installation ${installationId} failed`,
+        `pr poison sweep: installation ${installationId} token failed`,
         error,
       );
       continue;
     }
 
-    for (const entry of repos) {
+    for (const target of group) {
       try {
-        await recoverRepoPr(token, entry);
+        await recoverRepoPr(token, {
+          repo: target.repo,
+          defaultBranch: target.defaultBranch,
+        });
       } catch (error) {
-        console.error(`pr poison sweep: repo ${entry.repo} failed`, error);
+        console.error(`pr poison sweep: repo ${target.repo} failed`, error);
       }
     }
   }
+}
+
+/**
+ * D1 侧的三路候选（薄查询，判定全部在 `selectSweepTargets`）。
+ * `runs` 取每仓库最近一次 run 的时间（90 天窗口由纯函数判定）；
+ * `repos` / `pulls` 是小表，整表读即可（仓库数无关）。
+ */
+async function loadSweepSources(env: Env): Promise<{
+  runs: SweepRunRow[];
+  repos: SweepRepoRow[];
+  pulls: SweepRepoRow[];
+}> {
+  const [runs, repos, pulls] = await Promise.all([
+    env.DB.prepare(
+      "SELECT installation_id, repo, MAX(created_at) AS last_run_at " +
+        "FROM runs GROUP BY installation_id, repo",
+    ).all<SweepRunRow>(),
+    env.DB.prepare(
+      "SELECT installation_id, name AS repo, default_branch FROM repos",
+    ).all<SweepRepoRow>(),
+    env.DB.prepare(
+      "SELECT DISTINCT installation_id, repo FROM pulls",
+    ).all<SweepRepoRow>(),
+  ]);
+
+  return {
+    runs: runs.results ?? [],
+    repos: repos.results ?? [],
+    pulls: pulls.results ?? [],
+  };
 }
 
 interface PullSummary {

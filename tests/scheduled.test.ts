@@ -5,18 +5,21 @@
  *  - `scheduleGate`：daily/weekly/monthly × 命中/未命中/从未跑过；
  *  - `buildRecoveredPr`：巡检重建 PR 的统计必须来自 tip commit message；
  *  - `shouldRebuildPr` / `isBotAuthor`：卡死 PR 巡检判定；
+ *  - `selectSweepTargets`：巡检目标集（三源去重 + runs 的 90 天窗口）；
  *  - GitHub 列表响应解析。
  */
 import { describe, expect, it } from "vitest";
 
 import {
   SCHEDULE_PERIOD_MS,
+  SWEEP_RUN_WINDOW_DAYS,
   buildRecoveredPr,
   isBotAuthor,
   parseInstallationIds,
   parseInstallationRepos,
   prOverridesFromConfig,
   scheduleGate,
+  selectSweepTargets,
   shouldRebuildPr,
 } from "../src/ingress/scheduled-logic";
 import {
@@ -260,6 +263,194 @@ describe("shouldRebuildPr", () => {
 
   it("从未有 closed PR → 重建", () => {
     expect(shouldRebuildPr({ ...base, lastClosedPrAt: null })).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// selectSweepTargets（P1 加固 #5：巡检目标集只来自 D1）
+// ---------------------------------------------------------------------------
+
+const DAY = 24 * 3600_000;
+
+describe("selectSweepTargets", () => {
+  it("空集 / 缺省来源 → []", () => {
+    expect(selectSweepTargets({}, NOW)).toEqual([]);
+    expect(
+      selectSweepTargets({ runs: null, repos: null, pulls: null }, NOW),
+    ).toEqual([]);
+    expect(selectSweepTargets({ runs: [], repos: [], pulls: [] }, NOW)).toEqual(
+      [],
+    );
+  });
+
+  it("三源去重：同一 installation/repo 只出现一次", () => {
+    const targets = selectSweepTargets(
+      {
+        runs: [
+          { installation_id: 1, repo: "acme/site", last_run_at: ago(3600_000) },
+        ],
+        repos: [
+          { installation_id: 1, repo: "acme/site", default_branch: "main" },
+        ],
+        pulls: [{ installation_id: 1, repo: "acme/site" }],
+      },
+      NOW,
+    );
+
+    expect(targets).toEqual([
+      { installationId: 1, repo: "acme/site", defaultBranch: "main" },
+    ]);
+  });
+
+  it("runs 源按 90 天窗口过滤：只有陈旧 run 的仓库被丢弃", () => {
+    const targets = selectSweepTargets(
+      {
+        runs: [
+          {
+            installation_id: 1,
+            repo: "acme/fresh",
+            last_run_at: ago(89 * DAY),
+          },
+          {
+            installation_id: 1,
+            repo: "acme/stale",
+            last_run_at: ago(91 * DAY),
+          },
+        ],
+      },
+      NOW,
+    );
+
+    expect(SWEEP_RUN_WINDOW_DAYS).toBe(90);
+    expect(targets.map((t) => t.repo)).toEqual(["acme/fresh"]);
+  });
+
+  it("runs 源：恰好 90 天前仍在窗口内；时间不可解析 → 丢弃", () => {
+    const targets = selectSweepTargets(
+      {
+        runs: [
+          { installation_id: 2, repo: "acme/edge", last_run_at: ago(90 * DAY) },
+          {
+            installation_id: 2,
+            repo: "acme/broken",
+            last_run_at: "not-a-date",
+          },
+          { installation_id: 2, repo: "acme/missing" },
+        ],
+      },
+      NOW,
+    );
+
+    expect(targets.map((t) => t.repo)).toEqual(["acme/edge"]);
+  });
+
+  it("repos / pulls 源不受窗口限制（碰过就永久记得）", () => {
+    const targets = selectSweepTargets(
+      {
+        repos: [
+          {
+            installation_id: 3,
+            repo: "acme/old-site",
+            default_branch: "trunk",
+          },
+        ],
+        pulls: [{ installation_id: 3, repo: "acme/old-docs" }],
+      },
+      NOW,
+    );
+
+    // defaultBranch 未知（pulls 源）→ null，交给调用方回源查询。
+    expect(targets).toEqual([
+      { installationId: 3, repo: "acme/old-docs", defaultBranch: null },
+      { installationId: 3, repo: "acme/old-site", defaultBranch: "trunk" },
+    ]);
+  });
+
+  it("不同 installation 的同名仓库是两个目标", () => {
+    const targets = selectSweepTargets(
+      {
+        repos: [
+          { installation_id: 1, repo: "acme/site", default_branch: "main" },
+          { installation_id: 2, repo: "acme/site", default_branch: "main" },
+        ],
+      },
+      NOW,
+    );
+
+    expect(targets).toEqual([
+      { installationId: 1, repo: "acme/site", defaultBranch: "main" },
+      { installationId: 2, repo: "acme/site", defaultBranch: "main" },
+    ]);
+  });
+
+  it("defaultBranch 合并不覆盖已知值（runs 先到、repos 后到）", () => {
+    const targets = selectSweepTargets(
+      {
+        runs: [
+          { installation_id: 1, repo: "acme/site", last_run_at: ago(DAY) },
+        ],
+        repos: [
+          { installation_id: 1, repo: "acme/site", default_branch: "main" },
+          { installation_id: 1, repo: "acme/site", default_branch: "develop" },
+        ],
+      },
+      NOW,
+    );
+
+    expect(targets).toEqual([
+      { installationId: 1, repo: "acme/site", defaultBranch: "main" },
+    ]);
+  });
+
+  it("非法行（缺 installation_id / 空 repo）被忽略", () => {
+    const targets = selectSweepTargets(
+      {
+        runs: [
+          { installation_id: 1, repo: "", last_run_at: ago(DAY) },
+          { installation_id: 1, repo: "acme/ok", last_run_at: ago(DAY) },
+        ],
+        repos: [
+          { installation_id: Number.NaN, repo: "acme/bad" },
+          { installation_id: 1, repo: "" },
+        ],
+        pulls: [null as unknown as never],
+      },
+      NOW,
+    );
+
+    expect(targets).toEqual([
+      { installationId: 1, repo: "acme/ok", defaultBranch: null },
+    ]);
+  });
+
+  it("输出稳定排序（installation 升序，再按仓库名）", () => {
+    const targets = selectSweepTargets(
+      {
+        repos: [
+          { installation_id: 9, repo: "acme/b" },
+          { installation_id: 2, repo: "acme/z" },
+          { installation_id: 9, repo: "acme/a" },
+          { installation_id: 2, repo: "acme/a" },
+        ],
+      },
+      NOW,
+    );
+
+    expect(targets.map((t) => `${t.installationId}:${t.repo}`)).toEqual([
+      "2:acme/a",
+      "2:acme/z",
+      "9:acme/a",
+      "9:acme/b",
+    ]);
+  });
+
+  it("now 无法解析 → 抛错（不静默降级成空集/无限窗口）", () => {
+    expect(() =>
+      selectSweepTargets(
+        { pulls: [{ installation_id: 1, repo: "acme/x" }] },
+        new Date("nope"),
+      ),
+    ).toThrow(/invalid `now`/);
   });
 });
 

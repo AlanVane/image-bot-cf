@@ -9,10 +9,23 @@
  * 不测 Docker 构建与真实 CLI（jpegtran/optipng/gifsicle）——本机不保证安装，
  * 端到端交给编排方的容器 e2e。真实编码路径只断言"不违约"（产物可解码且不变大）。
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import sharp from "sharp";
+
+import { MAX_CONTAINER_INPUT_BYTES } from "../src/container/limits";
+
+// `oversize-client` 依赖 @cloudflare/containers（workerd 侧）；node 测试里用空实现替换，
+// 这样就能断言"超大输入在**碰绑定之前**就被拒绝"。
+vi.mock("@cloudflare/containers", () => ({
+  getRandom: vi.fn(async () => {
+    throw new Error("container binding must not be reached");
+  }),
+}));
+
+const { optimizeViaContainer } =
+  (await import("../src/container/oversize-client")) as typeof import("../src/container/oversize-client");
 
 interface OptimizeDeps {
   encode?: (
@@ -51,7 +64,13 @@ interface ServerModule {
     candidate: Uint8Array,
     original: Uint8Array,
   ): Promise<boolean>;
-  createOptimizeServer(options?: { deps?: OptimizeDeps }): Server;
+  createOptimizeServer(options?: {
+    deps?: OptimizeDeps;
+    maxBodyBytes?: number;
+  }): Server;
+  MAX_BODY_BYTES: number;
+  MAX_INPUT_BYTES: number;
+  SHARP_LIMIT_INPUT_PIXELS: number;
 }
 
 // server.mjs 是容器内 JS（不在 tsconfig 的 include 里），用变量 specifier 动态导入，
@@ -470,6 +489,72 @@ describe("HTTP 协议（POST /optimize · GET /healthz）", () => {
       expect(Buffer.from(payload.bytes, "base64").equals(input)).toBe(true);
     } finally {
       await new Promise<void>((resolve) => injected.close(() => resolve()));
+    }
+  });
+});
+
+describe("容器输入硬上限（§6.3：40MB 天花板）", () => {
+  it("Worker 侧常量 = 40MB；容器侧解码上限一致，body 上限含 base64 膨胀余量", () => {
+    expect(MAX_CONTAINER_INPUT_BYTES).toBe(40 * 1024 * 1024);
+    expect(server.MAX_INPUT_BYTES).toBe(40 * 1024 * 1024);
+    // body = 40MB 原始 × 4/3 base64 + JSON 头余量（两段上限对齐决策，2026-11-18）
+    expect(server.MAX_BODY_BYTES).toBe(55 * 1024 * 1024);
+    // sharp 文档默认值（≈16383²）作为硬像素上限显式写死。
+    expect(server.SHARP_LIMIT_INPUT_PIXELS).toBe(268402689);
+  });
+
+  it("客户端 >40MB 本地拒绝，不碰容器绑定（tool=error:input_too_large）", async () => {
+    // 40MB+1 字节：若闸门失效就会走到 getRandom（mock 抛错 → 不同的 tool），断言能区分。
+    const oversized = new Uint8Array(MAX_CONTAINER_INPUT_BYTES + 1);
+    const result = await optimizeViaContainer(
+      {} as never,
+      "img/huge.png",
+      oversized,
+      false,
+    );
+    expect(result.optimized).toBeNull();
+    expect(result.tool).toBe("error:input_too_large");
+  });
+
+  it("恰好 40MB 仍放行（卡在绑定缺失这一步，而不是体积闸门）", async () => {
+    const atCap = new Uint8Array(MAX_CONTAINER_INPUT_BYTES + 1).subarray(
+      0,
+      MAX_CONTAINER_INPUT_BYTES,
+    );
+    const result = await optimizeViaContainer(
+      {} as never,
+      "img/edge.png",
+      atCap,
+      false,
+    );
+    expect(result.optimized).toBeNull();
+    expect(result.tool).toBe("error:no_binding");
+  });
+
+  it("容器侧请求体超限 → 413（解析前拦截，不进解码器）", async () => {
+    // 注入小上限，避免测试里真的构造 40MB 请求体；真实上限由上一条常量断言钉住。
+    const limited = createOptimizeServer({ maxBodyBytes: 1024 });
+    await new Promise<void>((resolve) => {
+      limited.listen(0, "127.0.0.1", resolve);
+    });
+    const { port } = limited.address() as AddressInfo;
+    try {
+      const body = JSON.stringify({
+        path: "img/huge.png",
+        bytes: "A".repeat(4096),
+        aggressive: false,
+      });
+      const response = await fetch(`http://127.0.0.1:${port}/optimize`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      });
+      expect(response.status).toBe(413);
+      expect((await response.json()) as { error: string }).toEqual({
+        error: "body_too_large",
+      });
+    } finally {
+      await new Promise<void>((resolve) => limited.close(() => resolve()));
     }
   });
 });

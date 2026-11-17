@@ -6,10 +6,26 @@
  */
 
 import type { ImageStat } from "../types";
+import { MAX_CONTAINER_INPUT_BYTES } from "../container/limits";
 import { formatN2, formatPercent } from "../ux/templates";
 
 /** §5.3：`optimize-batch-{chunk}` 的块大小上限（同时受 80/min 内容写入限速约束，§4.2）。 */
 export const BATCH_SIZE = 10;
+
+/**
+ * PR 负载预算（§4.3）：单 PR 的图片数上限。
+ *
+ * `createCommitOnBranch` 的 additions 在 GraphQL 里一次提交，超过这个量级后
+ * 请求体/解析都进入危险区（实测良好区间），宁可显式失败也不静默 OOM。
+ */
+export const MAX_PR_IMAGES = 500;
+
+/**
+ * PR 负载预算（§4.3）：单 PR 的**原始文件字节**上限（additions 含重放）。
+ *
+ * 口径 = 待提交文件的字节数（不是 base64 长度），与实测可用的 GraphQL envelope 对齐。
+ */
+export const MAX_PR_TOTAL_BYTES = 10 * 1024 * 1024;
 
 /** §2.2 PR 明细表总计行的名字（原版 `*Total` 解析后 `name` = `Total`）。 */
 export const TOTAL_STAT_NAME = "Total";
@@ -179,6 +195,51 @@ export function tipViolatesGuard(
   currentTipSha: string | null,
 ): boolean {
   return guardTipSha !== currentTipSha;
+}
+
+/**
+ * 超大图兜底闸门（§6.3）：字节数 ≤40MB 才值得送容器。
+ *
+ * dispatch 的 15MB 守卫只说明"WASM 跑不动"，不代表"容器能跑"：40MB 是容器侧的硬上限
+ * （`container/server.mjs` 的请求体上限与解码上限）。超过就直接按 `too_large` 跳过，
+ * 免得白付一次 base64 膨胀 + 容器内存峰值。
+ */
+export function withinContainerInputCap(
+  byteSize: number,
+  maxBytes: number = MAX_CONTAINER_INPUT_BYTES,
+): boolean {
+  return byteSize <= maxBytes;
+}
+
+/**
+ * PR 负载预算（§4.3）：图片数与原始字节同时 ≤ 上限才算通过（边界值算通过）。
+ *
+ * 在**读取任何 staged blob 之前**预检，超限就让 run 显式失败——巨型 payload 一旦开始
+ * 组装，OOM 会在 step 里炸掉，既不可重试也看不到原因。
+ */
+export function withinPrBudget(
+  imageCount: number,
+  totalBytes: number,
+  maxCount: number = MAX_PR_IMAGES,
+  maxBytes: number = MAX_PR_TOTAL_BYTES,
+): boolean {
+  return imageCount <= maxCount && totalBytes <= maxBytes;
+}
+
+/**
+ * 重放丢失的静默回滚闸门（P1 架构评审发现）。
+ *
+ * 提交步从旧 `imgbot` tip 的树里取重放产物；该树被 GitHub 截断（§9-R10，`treeTruncated`）
+ * 时，找不到 `oldSha` 的重放会被丢弃，而 base 里是原图 → PR 里这些文件会静默退回未优化版本。
+ * 截断树对同一 base 快照是确定性的（重试无用），所以必须显式中止。
+ *
+ * 非截断树下的缺失只是陈旧缓存行，交给后续轮自愈（不中止）。
+ */
+export function shouldAbortForTruncatedReplays(
+  treeTruncated: boolean,
+  droppedReplays: number,
+): boolean {
+  return treeTruncated && droppedReplays > 0;
 }
 
 export async function sha256Hex(bytes: Uint8Array): Promise<string> {

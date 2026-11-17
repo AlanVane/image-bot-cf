@@ -44,6 +44,7 @@ import {
   pushWikiChanges,
 } from "../github/wiki-git";
 import { optimizeViaContainer } from "../container/oversize-client";
+import { MAX_CONTAINER_INPUT_BYTES } from "../container/limits";
 import { optimizeImage } from "../optimize/dispatch";
 import type {
   CompressionResult,
@@ -62,16 +63,21 @@ import {
 import { getCodecSet } from "./codecs-boot";
 import {
   BATCH_SIZE,
+  MAX_PR_IMAGES,
+  MAX_PR_TOTAL_BYTES,
   sha256Hex,
   splitCommitMessage,
   buildImageStats,
   bytesToKb,
   chunk,
+  shouldAbortForTruncatedReplays,
   splitOwnerRepo,
   stagingRefForRun,
   sumSizes,
   thresholdGate,
   tipViolatesGuard,
+  withinContainerInputCap,
+  withinPrBudget,
   type OptimizedImage,
 } from "./logic";
 
@@ -216,7 +222,13 @@ interface WikiPassOutcome {
 }
 
 interface CommitResult {
-  status: "committed" | "skipped_nochange" | "skipped_threshold" | "aborted";
+  status:
+    | "committed"
+    | "skipped_nochange"
+    | "skipped_threshold"
+    | "aborted"
+    /** 显式失败（负载超预算 / 截断树丢重放）：已 `patchRun` failed，不再抛错重试。 */
+    | "failed";
   commitSha?: string;
 }
 
@@ -704,10 +716,17 @@ export class OptimizeRun extends WorkflowEntrypoint<Env, RunDescriptor> {
           const imageEntries = tree.filter((entry) =>
             IMAGE_PATH_PATTERN.test(entry.path),
           );
+          // 截断必须在仪表盘可见（`runs.error` 是唯一展示位），但**不让 run 失败**：
+          // 截断只缩小本轮覆盖范围，不是错误；下一轮（或配置缩窄后）自然补上。
+          const scanNotes: string[] = [];
           if (imageEntries.length > MAX_SCAN_ENTRIES) {
             console.warn(
               `[OptimizeRun] ${params.repo}: ${imageEntries.length} images, ` +
                 `truncating scan to ${MAX_SCAN_ENTRIES} (P2: paginate scan-tree)`,
+            );
+            scanNotes.push(
+              `scan_truncated: ${MAX_SCAN_ENTRIES} entries; ` +
+                `${imageEntries.length - MAX_SCAN_ENTRIES} images beyond the cap were skipped`,
             );
           }
           if (truncated) {
@@ -715,12 +734,19 @@ export class OptimizeRun extends WorkflowEntrypoint<Env, RunDescriptor> {
               `[OptimizeRun] ${params.repo}: git tree is truncated by GitHub ` +
                 "(§9-R10); P2 falls back to per-directory recursion",
             );
+            scanNotes.push(
+              "tree_truncated: GitHub tree listing was truncated; " +
+                "files beyond the cap were not scanned",
+            );
           }
 
           await patchRun(env, runId, {
             state: "scanning",
             base_sha: baseSha,
             min_kb_reduced: config.minKBReduced,
+            ...(scanNotes.length > 0
+              ? { error: scanNotes.join("; ").slice(0, MAX_ERROR_LENGTH) }
+              : {}),
           });
 
           return {
@@ -857,18 +883,26 @@ export class OptimizeRun extends WorkflowEntrypoint<Env, RunDescriptor> {
                   optimizedImage.optimizedSize === null
                 ) {
                   const reason = optimizedImage.skipped ?? "not_smaller";
-                  // §6.3 超大图兜底：too_large 交给容器原生工具链（失败返回 null）
+                  // §6.3 超大图兜底：too_large 交给容器原生工具链（失败返回 null）。
+                  // 硬上限 40MB：超过就不发请求（base64 膨胀 + 容器内存都不划算），按 too_large 跳过。
                   let rescued: Uint8Array | null = null;
                   let containerTool: string | undefined;
                   if (reason === "too_large") {
-                    const over = await optimizeViaContainer(
-                      env,
-                      entry.path,
-                      original,
-                      loaded.config.aggressiveCompression,
-                    );
-                    rescued = over.optimized;
-                    containerTool = over.tool;
+                    if (withinContainerInputCap(original.length)) {
+                      const over = await optimizeViaContainer(
+                        env,
+                        entry.path,
+                        original,
+                        loaded.config.aggressiveCompression,
+                      );
+                      rescued = over.optimized;
+                      containerTool = over.tool;
+                    } else {
+                      console.warn(
+                        `[OptimizeRun] ${entry.path}: ${original.length} bytes exceeds ` +
+                          `container input cap (${MAX_CONTAINER_INPUT_BYTES}); skipping (too_large)`,
+                      );
+                    }
                   }
                   if (rescued) {
                     await env.STAGING.put(
@@ -1048,6 +1082,51 @@ export class OptimizeRun extends WorkflowEntrypoint<Env, RunDescriptor> {
           const baseTreeMap = new Map(
             loaded.entries.map((e) => [e.path, e.sha]),
           );
+
+          // P1（静默回滚修复）：重放产物只能从旧 imgbot tip 的树里取 blob。
+          // 旧 tip 树被 GitHub 截断（§9-R10）时，部分重放会找不到 oldSha 被丢弃，
+          // 而 base 里是原图 → PR 里这些文件会**静默退回未优化版本**。
+          // 截断对同一 base 快照是确定性的（重试无用），所以显式中止，不交出错误 PR。
+          const replayCandidates = scan.replayed.filter(
+            (r) => baseTreeMap.get(r.path) !== r.resultHash, // base 已含产物（合并后）→ 无需重放
+          );
+          const droppedReplays = replayCandidates.filter(
+            (r) => !oldTipTree.has(r.path),
+          ).length;
+          if (
+            shouldAbortForTruncatedReplays(loaded.treeTruncated, droppedReplays)
+          ) {
+            const note = `truncated_tree_lost_replays: ${droppedReplays} files`;
+            console.warn(`[OptimizeRun] ${params.repo}: ${note}, aborting run`);
+            await patchRun(env, runId, { state: "failed", error: note });
+            return { status: "failed" as const };
+          }
+          // 非截断树下的缺失只是陈旧缓存行（产物不可达）：丢弃并由后续轮自愈。
+          const plannedReplays = replayCandidates.filter((r) =>
+            oldTipTree.has(r.path),
+          );
+
+          // PR 负载预算（§4.3）：在**读取任何 staged blob / 构造 base64 之前**预检。
+          // 超限即显式失败——巨型 payload 一旦开始组装，OOM 在 step 内炸掉既看不到原因也不可重试。
+          // 字节口径 = additions 的原始文件字节（含重放）；重放大小取 image_cache.result_size
+          // （= 当初产物字节数），陈旧行的实际 blob 可能略有出入，这里只作预检屏障。
+          const projectedCount = optimized.length + plannedReplays.length;
+          const projectedBytes =
+            optimized.reduce((sum, image) => sum + image.afterBytes, 0) +
+            plannedReplays.reduce((sum, r) => sum + r.afterBytes, 0);
+          if (!withinPrBudget(projectedCount, projectedBytes)) {
+            const note =
+              `pr_payload_too_large: ${projectedCount} images / ${projectedBytes} bytes ` +
+              `exceeds cap (${MAX_PR_IMAGES} / ${MAX_PR_TOTAL_BYTES}); ` +
+              "use ignoredFiles or minKBReduced";
+            console.warn(`[OptimizeRun] ${params.repo}: ${note}`);
+            await patchRun(env, runId, {
+              state: "failed",
+              error: note.slice(0, MAX_ERROR_LENGTH),
+            });
+            return { status: "failed" as const };
+          }
+
           const additions: Array<{ path: string; contentsBase64: string }> = [];
           for (const image of optimized) {
             const staged = await env.STAGING.get(
@@ -1063,15 +1142,11 @@ export class OptimizeRun extends WorkflowEntrypoint<Env, RunDescriptor> {
             });
           }
           const includedReplay: ReplayStat[] = [];
-          for (const r of scan.replayed) {
-            // base 已含产物（合并后）→ 无需重放
-            if (baseTreeMap.get(r.path) === r.resultHash) continue;
-            const oldSha = oldTipTree.get(r.path);
-            if (!oldSha) continue; // 产物不可达（陈旧行），交给后续轮自愈
+          for (const r of plannedReplays) {
             additions.push({
               path: r.path,
               contentsBase64: toBase64(
-                await client.getBlobRaw(owner, repo, oldSha),
+                await client.getBlobRaw(owner, repo, oldTipTree.get(r.path)!),
               ),
             });
             includedReplay.push(r);

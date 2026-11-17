@@ -144,6 +144,127 @@ export function prOverridesFromConfig(raw: string | null): PrOverrideSettings {
 }
 
 /* -------------------------------------------------------------------------- */
+/* ③′ 巡检目标选择（P1 加固 #5：巡检只巡 D1 里有历史的仓库）                   */
+/* -------------------------------------------------------------------------- */
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * `runs` 源的「最近活动」窗口（天）。只有陈旧 run 的仓库不再算「我们还在管」；
+ * `repos` / `pulls` 两张小表是「碰过就永久记得」，不受此窗口限制。
+ */
+export const SWEEP_RUN_WINDOW_DAYS = 90;
+
+/** `runs` 源一行：该仓库最近一次 run（SQL 用 `MAX(created_at) AS last_run_at`）。 */
+export interface SweepRunRow {
+  installation_id: number;
+  repo: string;
+  last_run_at?: string | null;
+}
+
+/** `repos` / `pulls` 源一行（`name AS repo`）；`default_branch` 只有 `repos` 表有。 */
+export interface SweepRepoRow {
+  installation_id: number;
+  repo: string;
+  default_branch?: string | null;
+}
+
+/** 巡检的三路候选来源（全部来自 D1；缺省 = 空集）。 */
+export interface SweepTargetSources {
+  runs?: ReadonlyArray<SweepRunRow> | null;
+  repos?: ReadonlyArray<SweepRepoRow> | null;
+  pulls?: ReadonlyArray<SweepRepoRow> | null;
+}
+
+/** 巡检目标：一个具体的 `installation_id` + `owner/repo`。 */
+export interface SweepTarget {
+  installationId: number;
+  repo: string;
+  /** `repos.default_branch`；只在 runs/pulls 有记录的仓库为 null（调用方回源查）。 */
+  defaultBranch: string | null;
+}
+
+/**
+ * 三源去重成巡检目标集合（P1 加固 #5）。
+ *
+ * 旧实现每次 cron 枚举全部 installation 的全部仓库，每仓库至少 1 次 GitHub
+ * 调用（30 分钟一轮 ≈ 48 次/仓库/天）。未安装到的仓库不可能有我们的卡死 PR，
+ * 所以目标集 = D1 里「我们碰过」的仓库：`runs`（近 {@link SWEEP_RUN_WINDOW_DAYS}
+ * 天）、`repos`、`pulls` 的并集。调用预算随之从 O(全部仓库) 变成 O(有历史的仓库)。
+ *
+ * 纯函数：窗口过滤也在这里（不在 SQL 里），便于单测；行形状非法则跳过。
+ * `defaultBranch` 优先取 `repos` 源的非空值。
+ */
+export function selectSweepTargets(
+  sources: SweepTargetSources,
+  now: Date | number = Date.now(),
+): SweepTarget[] {
+  const nowMs = toEpochMs(now);
+  if (nowMs === null) {
+    // 宁可让本轮 cron 失败并留日志，也不要静默按错误窗口（或空集）跑。
+    throw new Error("selectSweepTargets: invalid `now`");
+  }
+  const cutoffMs = nowMs - SWEEP_RUN_WINDOW_DAYS * DAY_MS;
+
+  const targets = new Map<string, SweepTarget>();
+
+  const remember = (
+    installationId: number,
+    repo: string,
+    defaultBranch: string | null,
+  ): void => {
+    const key = `${installationId}\u0000${repo}`;
+    const existing = targets.get(key);
+    if (!existing) {
+      targets.set(key, { installationId, repo, defaultBranch });
+      return;
+    }
+    if (!existing.defaultBranch && defaultBranch) {
+      existing.defaultBranch = defaultBranch;
+    }
+  };
+
+  for (const row of sources.runs ?? []) {
+    const target = readTargetRow(row);
+    if (!target) continue;
+    const lastMs = toEpochMs(row?.last_run_at);
+    // 窗口外的 run 不是「还在管」的证据；时间不可解析同样不算。
+    if (lastMs === null || lastMs < cutoffMs) continue;
+    remember(target.installationId, target.repo, null);
+  }
+
+  for (const row of sources.repos ?? []) {
+    const target = readTargetRow(row);
+    if (!target) continue;
+    remember(target.installationId, target.repo, asString(row?.default_branch));
+  }
+
+  for (const row of sources.pulls ?? []) {
+    const target = readTargetRow(row);
+    if (!target) continue;
+    remember(target.installationId, target.repo, null);
+  }
+
+  // 稳定顺序：日志/测试可复现（按 installation，再按仓库名）。
+  return [...targets.values()].sort((a, b) => {
+    if (a.installationId !== b.installationId) {
+      return a.installationId - b.installationId;
+    }
+    return a.repo < b.repo ? -1 : a.repo > b.repo ? 1 : 0;
+  });
+}
+
+function readTargetRow(
+  row: { installation_id?: unknown; repo?: unknown } | null | undefined,
+): { installationId: number; repo: string } | null {
+  if (row === null || typeof row !== "object") return null;
+  const installationId = asNumber(row.installation_id);
+  const repo = asString(row.repo);
+  if (installationId === null || repo === null) return null;
+  return { installationId, repo };
+}
+
+/* -------------------------------------------------------------------------- */
 /* GitHub 列表响应窄化（纯解析，便于单测）                                    */
 /* -------------------------------------------------------------------------- */
 

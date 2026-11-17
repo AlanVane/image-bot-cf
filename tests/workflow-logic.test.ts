@@ -8,14 +8,19 @@ import { describe, expect, it } from "vitest";
 
 import {
   BATCH_SIZE,
+  MAX_PR_IMAGES,
+  MAX_PR_TOTAL_BYTES,
   buildImageStats,
   bytesToKb,
   chunk,
+  shouldAbortForTruncatedReplays,
   splitOwnerRepo,
   stagingRefForRun,
   sumSizes,
   thresholdGate,
   tipViolatesGuard,
+  withinContainerInputCap,
+  withinPrBudget,
   TOTAL_STAT_NAME,
 } from "../src/workflow/logic";
 import { createPrBody } from "../src/ux/templates";
@@ -235,5 +240,67 @@ describe("P1 修复辅助（staging ref 按 run 唯一 / tip 守卫复核）", (
     expect(tipViolatesGuard("aaa", "bbb")).toBe(true);
     expect(tipViolatesGuard("aaa", null)).toBe(true);
     expect(tipViolatesGuard(null, "aaa")).toBe(true);
+  });
+});
+
+describe("PR 负载预算（§4.3：张数 + 原始字节双上限）", () => {
+  it("常量按任务书口径：500 张 / 10MB", () => {
+    expect(MAX_PR_IMAGES).toBe(500);
+    expect(MAX_PR_TOTAL_BYTES).toBe(10 * 1024 * 1024);
+  });
+
+  it("边界：恰好等于上限通过，超一个单位失败", () => {
+    expect(withinPrBudget(MAX_PR_IMAGES, MAX_PR_TOTAL_BYTES)).toBe(true);
+    expect(withinPrBudget(MAX_PR_IMAGES + 1, 0)).toBe(false);
+    expect(withinPrBudget(0, MAX_PR_TOTAL_BYTES + 1)).toBe(false);
+  });
+
+  it("常规区间与空负载都通过", () => {
+    expect(withinPrBudget(0, 0)).toBe(true);
+    expect(withinPrBudget(1, 1)).toBe(true);
+    expect(withinPrBudget(MAX_PR_IMAGES - 1, MAX_PR_TOTAL_BYTES - 1)).toBe(
+      true,
+    );
+  });
+
+  it("两个维度任一超限即不通过（张数够但体积爆、反之亦然）", () => {
+    expect(withinPrBudget(MAX_PR_IMAGES + 1, 1)).toBe(false);
+    expect(withinPrBudget(1, MAX_PR_TOTAL_BYTES + 1)).toBe(false);
+  });
+
+  it("支持自定义上限（便于测试/未来配置化）", () => {
+    expect(withinPrBudget(2, 100, 2, 100)).toBe(true);
+    expect(withinPrBudget(3, 100, 2, 100)).toBe(false);
+    expect(withinPrBudget(2, 101, 2, 100)).toBe(false);
+  });
+});
+
+describe("容器输入硬上限（§6.3：>40MB 不送容器）", () => {
+  it("40MB 是边界：等于通过，超一字节不通过", () => {
+    const cap = 40 * 1024 * 1024;
+    expect(withinContainerInputCap(0)).toBe(true);
+    expect(withinContainerInputCap(cap)).toBe(true);
+    expect(withinContainerInputCap(cap + 1)).toBe(false);
+  });
+
+  it("自定义上限（默认值可被调用方覆盖）", () => {
+    expect(withinContainerInputCap(10, 10)).toBe(true);
+    expect(withinContainerInputCap(11, 10)).toBe(false);
+  });
+});
+
+describe("截断树丢重放的显式中止（P1 静默回滚修复）", () => {
+  it("树被截断且确有重放被丢弃 → 中止（否则 PR 会静默退回原图）", () => {
+    expect(shouldAbortForTruncatedReplays(true, 1)).toBe(true);
+    expect(shouldAbortForTruncatedReplays(true, 37)).toBe(true);
+  });
+
+  it("树被截断但没有丢重放 → 不中止（截断本身不算失败）", () => {
+    expect(shouldAbortForTruncatedReplays(true, 0)).toBe(false);
+  });
+
+  it("非截断树的缺失只是陈旧缓存行 → 不中止（交给后续轮自愈）", () => {
+    expect(shouldAbortForTruncatedReplays(false, 5)).toBe(false);
+    expect(shouldAbortForTruncatedReplays(false, 0)).toBe(false);
   });
 });

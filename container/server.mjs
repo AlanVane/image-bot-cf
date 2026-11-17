@@ -8,6 +8,7 @@
  *   GET  /healthz  → 200 `ok`
  *   POST /optimize → JSON `{ path, bytes: base64, aggressive: boolean }`
  *                 ← JSON `{ bytes: base64, tool: string }`
+ *                 请求体 >40MB 或解码后输入 >40MB → **413**（硬上限，不进解码器）
  *
  * 契约（与 §6 / §6.4 一致）：
  *   产物必须 **严格更小** 且 **可再解码**，否则原样返回输入字节；
@@ -31,11 +32,40 @@ const execFile = promisify(execFileCallback);
 
 // 容器只有 0.5 vCPU；限制 sharp 的线程/缓存，把内存留给超大图本身。
 sharp.cache(false);
-sharp.concurrency(1);
+// §6.3：2 线程是 0.5 vCPU 下的吞吐/内存折中（1 线程跑不满，4 线程抢内存）。
+sharp.concurrency(2);
+
+/**
+ * §6.3 硬上限：sharp 的像素天花板 268402689（≈16383²，sharp 文档默认值）。
+ * 显式写出并作为本容器的契约：超过这个像素数宁可拒绝，也不让 libvips 展开到 OOM。
+ */
+export const SHARP_LIMIT_INPUT_PIXELS = 268402689;
+
+/** 所有 sharp 实例统一的构造选项（`create` 类输入无像素概念，传了也无副作用）。 */
+const SHARP_OPTIONS = Object.freeze({
+  limitInputPixels: SHARP_LIMIT_INPUT_PIXELS,
+});
+
+/** 统一入口：保证**每条** sharp 管线都带硬像素上限。 */
+function createSharp(input, options = {}) {
+  return sharp(input, { ...SHARP_OPTIONS, ...options });
+}
 
 export const DEFAULT_PORT = 8000;
-/** base64 膨胀 ~4/3；留足余量（>15MB 才进容器，但单请求仍可能远大于阈值）。 */
-export const MAX_BODY_BYTES = 128 * 1024 * 1024;
+
+/**
+ * §6.3 硬上限：单张输入图 40MB（与 Worker 侧 `src/container/limits.ts` 同步）。
+ * 超过 → HTTP 413，绝不进解码器。
+ */
+export const MAX_INPUT_BYTES = 40 * 1024 * 1024;
+
+/**
+ * 请求体上限 = 55MB：JSON + base64 包装（~4/3 膨胀）不算小。取 55MB 是为了
+ * **对齐** Worker 侧 `MAX_CONTAINER_INPUT_BYTES`(40MB 原始字节) —— 40×4/3≈53.3MB
+ * 加 JSON 头余量，保证 40MB 以内的图都能进容器，不因包装膨胀被误杀（2026-11-18
+ * 对齐决策：两段上限同宽，唯一有效闸门是 40MB 原始字节）。仍在**解析前**拦截（413）。
+ */
+export const MAX_BODY_BYTES = 55 * 1024 * 1024;
 /** 单个 CLI 的墙钟上限（gifsicle 对巨帧 GIF 可能跑数十秒）。 */
 const CLI_TIMEOUT_MS = 120_000;
 /** `error:<原因>` 里原因的最大长度（避免把整段 stderr 塞回 Worker）。 */
@@ -161,17 +191,17 @@ async function runGifsicle(bytes, aggressive) {
 }
 
 function sharpMozjpeg(bytes) {
-  return sharp(bytes).jpeg({ quality: 80, mozjpeg: true }).toBuffer();
+  return createSharp(bytes).jpeg({ quality: 80, mozjpeg: true }).toBuffer();
 }
 
 function sharpPalettePng(bytes) {
-  return sharp(bytes)
+  return createSharp(bytes)
     .png({ palette: true, quality: 80, effort: 7, compressionLevel: 9 })
     .toBuffer();
 }
 
 function sharpLosslessPng(bytes) {
-  return sharp(bytes)
+  return createSharp(bytes)
     .png({ palette: false, effort: 10, compressionLevel: 9 })
     .toBuffer();
 }
@@ -217,7 +247,9 @@ export async function verifyCandidate(kind, candidate, original) {
   if (kind === "svg") return false;
 
   try {
-    const metadata = await sharp(candidateBytes, { animated: kind === "gif" }).metadata();
+    const metadata = await createSharp(candidateBytes, {
+      animated: kind === "gif",
+    }).metadata();
     if (!metadata.format || !metadata.width || !metadata.height) return false;
 
     if (kind === "gif") {
@@ -227,7 +259,7 @@ export async function verifyCandidate(kind, candidate, original) {
 
     const pixels = metadata.width * metadata.height;
     if (pixels > 50_000_000) return true; // 超大图只做头校验，避免 RAW 展开爆内存
-    await sharp(candidateBytes).raw().toBuffer();
+    await createSharp(candidateBytes).raw().toBuffer();
     return true;
   } catch {
     return false;
@@ -292,20 +324,43 @@ export async function optimizeBytes(payload, deps = defaultDeps) {
   }
 }
 
+/** 请求体超过 `MAX_BODY_BYTES` 时的专用错误（handler 映射成 413）。 */
+export class BodyTooLargeError extends Error {
+  constructor(limit) {
+    super(`body_too_large: exceeds ${limit} bytes`);
+    this.name = "BodyTooLargeError";
+    this.code = "body_too_large";
+  }
+}
+
 function readBody(req, limit = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
+    // 有 Content-Length 就在**读第一个字节之前**拒绝（这条路径覆盖绝大多数请求）。
+    const declared = Number(req.headers?.["content-length"]);
+    if (Number.isFinite(declared) && declared > limit) {
+      req.on("error", () => {}); // 客户端中途断开不应变成未处理的 stream error
+      req.resume(); // 排空但不缓存：让连接保持可用，413 才能被客户端读到
+      reject(new BodyTooLargeError(limit));
+      return;
+    }
+
     const chunks = [];
     let size = 0;
+    let failed = false;
     req.on("data", (chunk) => {
+      if (failed) return; // 已超限：继续排空但不再累积
       size += chunk.length;
       if (size > limit) {
-        reject(new Error("body_too_large"));
-        req.destroy();
+        failed = true;
+        chunks.length = 0;
+        reject(new BodyTooLargeError(limit));
         return;
       }
       chunks.push(chunk);
     });
-    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("end", () => {
+      if (!failed) resolve(Buffer.concat(chunks));
+    });
     req.on("error", reject);
   });
 }
@@ -322,6 +377,10 @@ function sendJson(res, status, body) {
 /** Node request handler（导出以便测试起随机端口）。 */
 export function createOptimizeHandler(options = {}) {
   const deps = options.deps ?? defaultDeps;
+  const maxBodyBytes =
+    Number.isFinite(options.maxBodyBytes) && options.maxBodyBytes > 0
+      ? options.maxBodyBytes
+      : MAX_BODY_BYTES;
 
   return async function handler(req, res) {
     try {
@@ -338,7 +397,8 @@ export function createOptimizeHandler(options = {}) {
         return;
       }
 
-      const raw = await readBody(req);
+      // 硬上限在 JSON 解析前拦（413），超大 body 不占解析/解码内存。
+      const raw = await readBody(req, maxBodyBytes);
       let payload;
       try {
         payload = JSON.parse(raw.toString("utf8"));
@@ -361,6 +421,10 @@ export function createOptimizeHandler(options = {}) {
         sendJson(res, 400, { error: "empty_bytes" });
         return;
       }
+      if (input.length > MAX_INPUT_BYTES) {
+        sendJson(res, 413, { error: "input_too_large" });
+        return;
+      }
 
       const result = await optimizeBytes(
         {
@@ -376,7 +440,11 @@ export function createOptimizeHandler(options = {}) {
         tool: result.tool,
       });
     } catch (error) {
-      // 走到这里说明是协议层失败（读 body 超限等），仍以错误码回应，由 Worker 回退跳过。
+      // 协议层失败：体积超限给 413（Worker 侧映射成跳过），其余仍是错误码，由 Worker 回退跳过。
+      if (error instanceof BodyTooLargeError) {
+        sendJson(res, 413, { error: "body_too_large" });
+        return;
+      }
       const reason = errorReason(error);
       sendJson(res, 500, { error: reason });
     }
