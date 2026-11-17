@@ -2,6 +2,11 @@
   "name": "image-bot-cf",
   "private": true,
   "version": "0.0.1",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AlanVane/image-bot-cf.git"
+  },
   "type": "module",
   "description": "Imgbot-compatible image optimization bot, rebuilt on Cloudflare (see DESIGN.md)",
   "scripts": {

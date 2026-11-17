@@ -83,3 +83,9 @@ Note: a Workflow instance pins the code version at creation — right after a de
 ## Credits
 
 Behavior and UX parity with [Imgbot](https://github.com/imgbot/Imgbot) by [dabutvin](https://github.com/dabutvin) and contributors (MIT). This is an independent rebuild on Cloudflare, not affiliated with the original.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Third-party components and their full license texts: [LICENSES.md](LICENSES.md) (compliance rationale & decisions) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+This product includes software developed by the Independent JPEG Group (`jpegtran`/MozJPEG lineage via `@jsquash/jpeg`).
