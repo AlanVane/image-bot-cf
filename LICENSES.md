@@ -94,7 +94,9 @@
       NOTICE/版权与 BSD-3 免责均已保留。
 - [x] **IJG 致谢**（2026-11-17）：README License 节含 Independent JPEG Group 致谢。
 - [x] **公开可访问的许可证页**（2026-11-17）：README 链接 LICENSE / LICENSES.md /
-      THIRD_PARTY_NOTICES.md（仓库公开即达标；站点 `/licenses` 为可选增强）。
+      THIRD_PARTY_NOTICES.md；**仓库已公开**（2026-11-17）→ 正式达标。全历史密钥
+      扫描已完成（私钥/token 模式全量过 `git grep` 各 commit 树：命中均为测试
+      一次性密钥与文档字样，`.dev.vars` 从未入库）。
 - [x] **GIF 决策记录**（2026-11-17）：§3.1 定案 1+2 组合；gifsicle 不进 bundle。
 - [x] **有损 PNG 决策记录**（2026-11-17）：§3.2 定案不引入 GPL-3 量化器，走 gifenc
       quantize（MIT）；基准见 `bench/RESULTS.md`。
