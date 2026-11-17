@@ -18,6 +18,7 @@
 import * as pngWasmBindings from "@jsquash/png/codec/pkg/squoosh_png_bg.wasm";
 import jpegDecWasm from "@jsquash/jpeg/codec/dec/mozjpeg_dec.wasm";
 import jpegEncWasm from "@jsquash/jpeg/codec/enc/mozjpeg_enc.wasm";
+import * as oxipngWasmBindings from "@jsquash/oxipng/codec/pkg/squoosh_oxipng_bg.wasm";
 
 import { initCodecsFromModules } from "../optimize/dispatch";
 import { createGifCodec } from "../optimize/gif";
@@ -39,6 +40,14 @@ const pngWasm = (pngWasmBindings as unknown as { default: WebAssembly.Module })
   .default;
 
 /**
+ * oxipng 的 wasm 同样带 `.wasm.d.ts` 兄弟声明（wbindgen 绑定遮蔽环境声明），
+ * 与 png 一样从命名空间取 default 断言。ST 版（pkg/）——workerd 无线程。
+ */
+const oxipngWasm = (
+  oxipngWasmBindings as unknown as { default: WebAssembly.Module }
+).default;
+
+/**
  * 取（或首次装配）编解码器集合。并发调用共享同一个装配 promise。
  *
  * 装配失败会清空记忆化，下一次调用重新尝试（isolate 级自愈）。
@@ -50,6 +59,7 @@ export function getCodecSet(): Promise<CodecSet> {
     pngWasm,
     jpegDecWasm,
     jpegEncWasm,
+    oxipngWasm,
   }).then((set) => ({
     // GIF 是纯 JS codec（omggif+gifenc），不走 wasm 装配，完成后挂载（§9-R3）
     ...set,

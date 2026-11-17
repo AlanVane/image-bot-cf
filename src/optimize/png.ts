@@ -41,6 +41,12 @@
 import type { CodecSet, ImageDataLike } from "../types";
 import pngDecode, { init as initPngDecode } from "@jsquash/png/decode.js";
 import pngEncode, { init as initPngEncode } from "@jsquash/png/encode.js";
+// oxipng 无损重压缩（§6.1）：直接对 PNG 字节做 IDAT 重压缩，无需解码。
+// 注意绕过 @jsquash/oxipng 的 init() 包装——它按浏览器全局猜 ST/MT，
+// workerd 必须钉死单线程 pkg（无 Web Worker / SharedArrayBuffer）。
+import oxipngInit, {
+  optimise as oxipngOptimise,
+} from "@jsquash/oxipng/codec/pkg/squoosh_oxipng.js";
 // gifenc 无 .d.ts（见 src/optimize/gif.ts 同一处理）；只用到通用 RGBA 量化器。
 // @ts-expect-error -- gifenc 无类型声明
 import { applyPalette, quantize } from "gifenc";
@@ -313,4 +319,20 @@ export async function createPngCodec(
     encode: encodeLossless,
     encodeLossy,
   };
+}
+
+/**
+ * oxipng 无损重压缩候选（§6.1 PNG 无损主力；§11-4：ST wasm 164KB）。
+ * 字节进字节出（IDAT 重压缩，不解码像素）；oxipng 自身无收益时原样返回，
+ * 由 dispatch 的"严格变小"契约统一裁决。
+ *
+ * 参数：level 2（oxipng 默认安全档，速度/压缩率均衡）；
+ * interlace/optimiseAlpha 关闭——输出隔行与透明像素字节均保持无损语义。
+ */
+export async function createOxipngOptimizer(
+  wasmModule: WebAssembly.Module,
+): Promise<(bytes: Uint8Array) => Promise<Uint8Array>> {
+  await oxipngInit(wasmModule);
+  return async (bytes: Uint8Array): Promise<Uint8Array> =>
+    oxipngOptimise(bytes, 2, false, false);
 }

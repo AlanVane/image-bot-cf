@@ -19,6 +19,7 @@
   "dependencies": {
     "@cloudflare/containers": "^0.3.7",
     "@jsquash/jpeg": "^1.6.0",
+    "@jsquash/oxipng": "^2.3.0",
     "@jsquash/png": "^3.1.1",
     "gifenc": "^1.0.3",
     "isomorphic-git": "^1.44.15",

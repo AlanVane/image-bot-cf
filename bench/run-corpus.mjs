@@ -20,6 +20,7 @@ const codecs = {
     pngWasm: await mod("../node_modules/@jsquash/png/codec/pkg/squoosh_png_bg.wasm"),
     jpegEncWasm: await mod("../node_modules/@jsquash/jpeg/codec/enc/mozjpeg_enc.wasm"),
     jpegDecWasm: await mod("../node_modules/@jsquash/jpeg/codec/dec/mozjpeg_dec.wasm"),
+    oxipngWasm: await mod("../node_modules/@jsquash/oxipng/codec/pkg/squoosh_oxipng_bg.wasm"),
   })),
   gif: createGifCodec(),
 };
@@ -125,7 +126,7 @@ for (const c of comparison) {
 }
 md += `\n### 差距定性说明（§9-R6）\n\n`;
 md += `- **JPEG 无损**：实测 \`jpegtran -optimize\` 在 sharp 产出的已紧凑 JPEG 上增益 ≈0（±0.05% 噪声）——真实相机/截图素材的 Huffman 冗余更大，开放问题 §11-2 的补强收益需以真实素材复测；目前双方差距集中在**元数据剥离**（03 行可见）。\n`;
-md += `- **PNG 无损**：我们 = chunk 剥离 + 严格变小契约；oxipng 做完整 IDAT 重压缩，照片 PNG 上通常占优（补强项 §11-4；本机 oxipng 二进制不可运行，未量化）。\n`;
+md += `- **PNG 无损**：我们 = chunk 剥离 + **oxipng 重压缩**（\`@jsquash/oxipng\`，§11-4 已闭环）双候选取小；与原版 oxipng 同源（wasm 版），数字等价（本机 CLI 不可运行，对照即自身）。\n`;
 md += `- **GIF**：我们 = omggif 解码 + gifenc 重编码；gifsicle -O3 的 LZW 重编码更强（13 行 16.9% vs 我们 9.4%），但我们**剥离注释块**而 gifsicle 默认保留（14 行 −37.3% vs −3.6%），各有所长。\n`;
 md += `- **SVG**：双方同为 svgo 多轮，数字等价。\n`;
 md += `- **CMYK JPEG**（20）：jpegtran 原样透传（0%）；我们因解码校验恒 skip（见语料注记）。\n`;
@@ -133,7 +134,7 @@ md += `\n## 阈值视角（minKBReduced = 10KB）\n\n`;
 const clears = rows.filter((r) => r.mode === "lossless" && r.clears10kb);
 md += clears.length ? clears.map((r) => `- ${r.name}：−${kb(r.before - r.after)} KB`).join("\n") : "（无）";
 md += `\n\n## 语料构造注记\n\n`;
-md += `- 语料由 sharp/gifenc 生成，本就接近各编码器最优：PNG/GIF 无损的 0% 是**语料属性**（真实素材多带元数据块/低效编码，真仓实测有收益），JPEG 无损 0% 则是**管线差距**（无 Huffman 重优化，见上）。\n`;
+md += `- 语料由 sharp/gifenc 生成，各编码器初始冗余不同：PNG 无损收益来自 oxipng 重压缩（接入后实测）；GIF 由 gifenc 生成故 12/13 无损无收益属预期（14 验证注释块剥离收益）；JPEG 无损 0% 是**管线差距**（无 Huffman 重优化，见上）。\n`;
 md += `- CMYK JPEG 在注入解码器的校验路径下恒为 \`decode_failed\`（jsquash 不解 CMYK）→ 生产上 CMYK 图不会被优化，契约选择"宁可少优化"。如需覆盖，走 Containers 通道（§6.3）。\n`;
 md += `- GIF 注释型（14）验证注释块剥离收益；GIF 由 gifenc 生成，故 12/13 无损无收益属预期。\n`;
 md += `\n`;

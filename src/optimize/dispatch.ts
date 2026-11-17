@@ -26,6 +26,7 @@ import {
   validateJpegStructure,
 } from "./jpeg";
 import {
+  createOxipngOptimizer,
   createPngCodec,
   readPngSize,
   stripPngMetadata,
@@ -94,6 +95,8 @@ export interface CodecWasmModules {
   pngWasm?: WebAssembly.Module;
   jpegEncWasm?: WebAssembly.Module;
   jpegDecWasm?: WebAssembly.Module;
+  /** §11-4/§11-7：oxipng 无损重压缩（ST wasm 164KB，构建期 import）。 */
+  oxipngWasm?: WebAssembly.Module;
 }
 
 /**
@@ -106,6 +109,11 @@ export async function initCodecsFromModules(
   const codecs: CodecSet = {};
   if (modules.pngWasm) {
     codecs.png = await createPngCodec(modules.pngWasm);
+    if (modules.oxipngWasm) {
+      codecs.png.optimizeLossless = await createOxipngOptimizer(
+        modules.oxipngWasm,
+      );
+    }
   }
   codecs.jpeg = await createJpegCodec({
     ...(modules.jpegEncWasm ? { encodeWasm: modules.jpegEncWasm } : {}),
@@ -268,9 +276,18 @@ async function buildCandidates(
   // PNG
   const candidates: Uint8Array[] = [stripPngMetadata(bytes)];
   if (codecs.png) {
+    // 无损重压缩候选（oxipng，§6.1 PNG 无损主力）：与 chunk 剥离同场竞争取小。
+    // 单个候选失败不影响其余（坏文件/不认识的变体 → 只丢这路候选）。
+    if (codecs.png.optimizeLossless) {
+      try {
+        candidates.push(await codecs.png.optimizeLossless(bytes));
+      } catch {
+        // oxipng 不接受该文件 → 丢弃此候选
+      }
+    }
     const img = await codecs.png.decode(bytes);
     if (exceedsPixelLimit(img.width, img.height)) return candidates; // 解码后复核
-    // 注：像素无损重编码（@jsquash/png）。压缩率弱于 oxipng，§6.1 已登记取舍。
+    // 注：像素无损重编码（@jsquash/png）。压缩率弱于 oxipng，仅作兜底候选。
     candidates.push(await codecs.png.encode(img));
     // aggressive 的有损候选（调色板量化，§6.1 b 路线）：与无损候选同场竞争取小
     if (aggressive && codecs.png.encodeLossy) {

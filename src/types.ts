@@ -101,6 +101,8 @@ export interface CodecSet {
     encode: (img: ImageDataLike) => Promise<Uint8Array>;
     /** aggressive 的有损候选（调色板量化 PNG24，gifenc quantize；§6.1 b 路线）。 */
     encodeLossy?: (img: ImageDataLike) => Promise<Uint8Array>;
+    /** 无损重压缩候选（oxipng，字节进字节出；§6.1 PNG 无损主力）。 */
+    optimizeLossless?: (bytes: Uint8Array) => Promise<Uint8Array>;
   };
   jpeg?: {
     /** P1 无损 = 元数据/段剥离（字节级），见 lane 实现 */

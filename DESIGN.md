@@ -308,7 +308,7 @@ queued → scanning → optimizing → committing → pr_open
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------ | --------------------------------------------------------------- |
 | `.svg`             | **svgo**（纯 JS，无 wasm）                                                                                             | 同（svgo multipass）                                                  | MIT                      | 毫秒级，中位 ~42% 削减                                          |
 | `.jpg/.jpeg`       | mozjpeg `jpegtran -optimize -copy none` → wasm（**需自行编译打包**）                                                   | `@jsquash/jpeg`（mozjpeg 编码器，q80）                                | IJG/BSD、Apache-2.0      | 有损 dec 12ms/MP + enc 117ms/MP ≈ **130ms/MP**（实测 3MP 样张） |
-| `.png`             | **oxipng**（MIT，Rust→wasm）                                                                                           | pngquant/libimagequant wasm（**GPL-3**，见开放问题）或 `@jsquash/png` | MIT / GPL-3 / Apache-2.0 | 无损 50–300ms/MP；pngquant 50–150ms/MP                          |
+| `.png`             | **oxipng**（MIT，Rust→wasm，`@jsquash/oxipng`）+ chunk 剥离，双候选取小（2026-11-17 接入）                             | pngquant/libimagequant wasm（**GPL-3**，见开放问题）或 `@jsquash/png` | MIT / GPL-3 / Apache-2.0 | 无损 50–300ms/MP；pngquant 50–150ms/MP                          |
 | `.gif`             | **omggif 解码 + gifenc 重编码**（纯 JS、MIT×2；保色调色板 → 像素无损；2026-11-17 定稿，取代 gifsicle-wasm/GPL-2 路线） | `quantize` 128 色量化 + 与无损候选取小                                | MIT×2                    | 实测：注释型 783B→141B；aggressive −25%；400×400 ≈33ms          |
 | 大图 ≥8MP 或 ≥15MB | → §6.3 Containers                                                                                                      | 同                                                                    | —                        | —                                                               |
 
@@ -509,10 +509,10 @@ DoD：仪表盘操作与原版 `Web/` 行为对齐；多租户限额生效。
 1. ✅ **已定案并落地（2026-11-17）**：走 §4.3 方案 A（GraphQL `createCommitOnBranch`），真实流水线 commit `f8e5ac7` 实测 `verified: true`（GitHub PGP 签名）。二进制 base64 保真、文本同规均已实测；备胎 B（openpgp.js）封存
 2. ✅ **已实测（2026-11-17）**：REST Git Data API **不服务** wiki 仓（`github/gitignore.wiki` 等三个有内容的公共 wiki 全部 404，判别性实验）→ R5 走 **git 协议**（isomorphic-git，官方支持 Workers），wiki 模式 = clone→优化→直接 push 默认分支
 3. `@jsquash` 各 codec 在 workerd 实测 CPU/内存（本地基准是 Node V8，同引擎但需真环境确认 8MP 边界值）；并实测 workerd 是否提供全局 `ImageData`（jsquash 解码内部 `new ImageData`，缺则在 codec init 补 ~5 行 shim；类型已用 `ImageDataLike` 解耦）
-4. oxipng/jpegtran 的 wasm 构建产物体积与 SIMD 支持
-5. GPL 编解码的许可策略（R7）
+4. ~~oxipng/jpegtran 的 wasm 构建产物体积与 SIMD 支持~~ **oxipng 半闭环（2026-11-17）**：`@jsquash/oxipng` 2.3.0 ST wasm 实测 **164KB**（MT 版 232KB 不适用——workerd 无线程，已钉 ST pkg），无 SIMD 依赖；**jpegtran 侧仍开放**（`@chimok/jpegtran-js` 仅几何变换不含 `-optimize`，见任务 2）
+5. ~~GPL 编解码的许可策略（R7）~~ **已定案（2026-11-17）**：bundle 零 copyleft，gifsicle 仅容器独立进程——见 LICENSES.md §3 与 §9-R7
 6. ✅ ~~`ignoredFiles` 正则等价性测试向量~~ 已对拍：上游 `RepoConfiguration` MSTest 向量已移植进 `tests/config.test.ts`
-7. `@jsquash/png` 重编码可能比原文件更大（`shot.png` 实测 86,913B > 59,971B）→ oxipng-wasm 构建提前到 P1.5（§6.1）
+7. ✅ **已闭环（2026-11-17）**：`@jsquash/png` 重编码比原文件更大的问题由 **oxipng 候选**解决——PNG 无损 = chunk 剥离 + oxipng 双候选取小（`src/optimize/png.ts` `createOxipngOptimizer`，tests/png-oxipng.test.ts 五条契约用例；bench 语料 PNG 实测 0%→37–92%）
 
 ## 12. 附录：调研来源
 
