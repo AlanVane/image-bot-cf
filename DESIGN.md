@@ -314,6 +314,7 @@ queued → scanning → optimizing → committing → pr_open
 契约不变式（与原版一致）：**只有严格变小的文件才替换**；优化后所有非 SVG 图**解码验证**一次（原版用 ImageMagick reset 校验防损坏），校验失败即丢弃该文件结果。
 
 实测记录（bench 夹具）：`shot.png` chunk 剥离 60,121→59,971B，而 `@jsquash/png` 重编码 86,913B（更大，被弃）——PNG 无损主力应为 **oxipng-wasm（提前到 P1.5）**，`@jsquash/png` 仅兜底；JPEG P1 段剥离不含 Huffman 重优化（`-optimize`），节省来自元数据；CMYK/YCCK 图需保留 APP14（见 `src/optimize/jpeg.ts` 注释）。
+PNG 有损（b 路线，2026-11-17 落地）：gifenc `quantize`（MIT）调色板量化 → jsquash 编码（lodepng 自动落索引色）。实测：65k 色渐变 314,781→**41,502B（−86.8%）**；透明槽保留；低色图无收益（契约兜底）。c/d 路线（容器 sharp palette）已并存于 §6.3 通道。
 
 ### 6.2 打包与运行约束（硬性）
 
@@ -321,7 +322,11 @@ queued → scanning → optimizing → committing → pr_open
 2. **128MB 内存/隔离是真正的墙**（解码 RGBA 4B/px + 编码缓冲 ≈ 3× 峰值）：单图 >8MP（≈96MB）或 >15MB 直接走 §6.3 或跳过；`optimize-batch` 块内**并发=1**。
 3. 单线程：无 Web Worker/threads，SIMD 可用（`@jsquash/webp` 用 simd 版）。
 
-### 6.3 Containers 兜底（P2+，beta）
+### 6.3 Containers 兜底（✅ 已落地，2026-11-17）
+
+> 实测：3 张 >8MP 截图经容器 optipng 救回（−29.6% / −35.2% / −34.8%，PR#5）；
+> 传输偏差：`POST /optimize` 直传 base64 字节（非 R2 key）——容器无状态、无 R2 绑定，≤50MB 图在 Worker 100MB 上限内。
+> 客户端必须 `startAndWaitForPorts()` 后再 fetch（否则冷启动 connection refused，实测教训）。
 
 - 触发条件：像素 >8MP 或 文件 >15MB，或 GIF 有损（若 wasm 补丁未就绪）
 - 形态：`@cloudflare/containers` 容器（standard-1 起：0.5 vCPU / 4GiB），内跑 sharp / image_optim / gifsicle 原生二进制；Worker 经 DO `getByName(run_id)` 调用，HTTP 传 R2 key（不传字节流经 DO）
@@ -458,7 +463,7 @@ CREATE TABLE settings (                  -- 仪表盘/手动覆盖项（分支�
 | R1  | `createCommitOnBranch` 的 Verified 徽章未按文档生效；`FileAddition` 二进制支持存疑                          | 体验差一档 / 阻塞        | §4.3 A→B→C 降级链                                                          | P1 第一周真仓实测              |
 | R2  | 内容写入二级限速（80/min、500/hr）                                                                          | 巨仓 PR 慢               | blob 写入分散到各 chunk 步（≤10/步）+ 步进重试退避消化 429；巨仓分批/分 PR | 用 2000 图夹具仓压测           |
 | R3  | ~~GIF 无现成 workerd 编码路径~~ **已关闭（2026-11-17）**：omggif+gifenc 纯 JS 落地（`src/optimize/gif.ts`） | ~~功能缺口~~             | 与原版 gifsicle 的差距记 §9-R6；gifsicle 级优化归 Containers 线            | 9 条单测 + 真仓 12 张 GIF 验证 |
-| R4  | 大图 OOM（128MB）                                                                                           | run 失败                 | 尺寸守卫 + Containers 路由 + 逐图 try/catch 隔离                           | 15MP 照片夹具                  |
+| R4  | ~~大图 OOM（128MB）~~ **已关闭（2026-11-17）**：守卫 + Containers 兜底双保险，3 张真仓巨图实测救回（−29.6%/−35.2%/−34.8%） | ~~run 失败~~             | 尺寸守卫 + 容器通道 + 逐图 try/catch 隔离                                | 15MP 夹具 + 真仓实测            |
 | R5  | `compressWiki`：wiki 仓对 Git Data API 支持未知                                                             | 功能缺口                 | 实测；备选 isomorphic-git（官方支持 Workers）                              | P2 实测 `owner/repo.wiki`      |
 | R6  | wasm 编解码与原版二进制压缩率不完全一致                                                                     | 数字略有出入（契约不变） | 明示"变小才替换"；基准回归集对比                                           | 建 20 图基准集记录前后对比     |
 | R7  | GPL 编解码（gifsicle GPL-2、libimagequant GPL-3）传染性                                                     | 开源合规                 | 许可证评审；评估 BSD/MIT 替代（gifenc 等）                                 | 发布前法务清单                 |

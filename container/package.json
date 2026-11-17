@@ -1,0 +1,14 @@
+{
+  "name": "imgbot-oversize-container",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Oversize image fallback service for image-bot-cf (DESIGN.md §6.3)",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "sharp": "0.35.5"
+  }
+}

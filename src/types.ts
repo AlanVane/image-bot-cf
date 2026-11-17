@@ -99,6 +99,8 @@ export interface CodecSet {
   png?: {
     decode: (bytes: Uint8Array) => Promise<ImageDataLike>;
     encode: (img: ImageDataLike) => Promise<Uint8Array>;
+    /** aggressive 的有损候选（调色板量化 PNG24，gifenc quantize；§6.1 b 路线）。 */
+    encodeLossy?: (img: ImageDataLike) => Promise<Uint8Array>;
   };
   jpeg?: {
     /** P1 无损 = 元数据/段剥离（字节级），见 lane 实现 */
@@ -132,6 +134,9 @@ export interface Env {
   ROUTER: Queue<RunDescriptor>;
   OPTIMIZE: Workflow;
   REPO_LOCK: DurableObjectNamespace<import("./do/repo-lock").RepoLock>;
+  IMAGE_CONTAINER: DurableObjectNamespace<
+    import("./container/image-container").ImageContainer
+  >;
   GITHUB_APP_ID: string;
   GITHUB_PRIVATE_KEY: string;
   GITHUB_WEBHOOK_SECRET: string;

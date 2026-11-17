@@ -43,6 +43,7 @@ import {
   cloneWiki,
   pushWikiChanges,
 } from "../github/wiki-git";
+import { optimizeViaContainer } from "../container/oversize-client";
 import { optimizeImage } from "../optimize/dispatch";
 import type {
   CompressionResult,
@@ -198,6 +199,8 @@ interface ScanResult {
 interface SkippedImage {
   path: string;
   reason: SkipReason;
+  /** 兜底通道的诊断标签（如容器工具名/错误原因）。 */
+  tool?: string;
 }
 
 interface BatchResult {
@@ -854,9 +857,42 @@ export class OptimizeRun extends WorkflowEntrypoint<Env, RunDescriptor> {
                   optimizedImage.optimizedSize === null
                 ) {
                   const reason = optimizedImage.skipped ?? "not_smaller";
-                  outcome.skipped.push({ path: entry.path, reason });
+                  // §6.3 超大图兜底：too_large 交给容器原生工具链（失败返回 null）
+                  let rescued: Uint8Array | null = null;
+                  let containerTool: string | undefined;
+                  if (reason === "too_large") {
+                    const over = await optimizeViaContainer(
+                      env,
+                      entry.path,
+                      original,
+                      loaded.config.aggressiveCompression,
+                    );
+                    rescued = over.optimized;
+                    containerTool = over.tool;
+                  }
+                  if (rescued) {
+                    await env.STAGING.put(
+                      stagingKey(runId, entry.path, "opt"),
+                      rescued,
+                    );
+                    outcome.optimized.push({
+                      path: entry.path,
+                      sourceSha: entry.sha,
+                      resultHash: await sha256Hex(rescued),
+                      beforeBytes: original.length,
+                      afterBytes: rescued.length,
+                      beforeKb: bytesToKb(original.length),
+                      afterKb: bytesToKb(rescued.length),
+                    });
+                    continue;
+                  }
+                  outcome.skipped.push({
+                    path: entry.path,
+                    reason,
+                    tool: containerTool,
+                  });
                   // 负向缓存（§7.3）：确定性"不会更小"结论入库，免得每轮重试；
-                  // unsupported 不缓存（P2 补 GIF 等格式后需重判）
+                  // unsupported 不缓存（格式支持会演进）；too_large 不缓存（环境相关）
                   if (reason === "not_smaller" || reason === "decode_failed") {
                     await env.DB.prepare(IMAGE_CACHE_UPSERT)
                       .bind(

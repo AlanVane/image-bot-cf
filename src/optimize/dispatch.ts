@@ -271,10 +271,11 @@ async function buildCandidates(
     const img = await codecs.png.decode(bytes);
     if (exceedsPixelLimit(img.width, img.height)) return candidates; // 解码后复核
     // 注：像素无损重编码（@jsquash/png）。压缩率弱于 oxipng，§6.1 已登记取舍。
-    // aggressive PNG 暂与无损同路：pngquant(GPL-3) 不可用，wasm-image-optimization 的
-    // PNG 编码其实是无损（quality 对 PNG 无效，实测见 src/optimize/png.ts 头注释）。
-    // 因此这里**不**按 aggressive 分流；新增有损候选时再在此分支。
     candidates.push(await codecs.png.encode(img));
+    // aggressive 的有损候选（调色板量化，§6.1 b 路线）：与无损候选同场竞争取小
+    if (aggressive && codecs.png.encodeLossy) {
+      candidates.push(await codecs.png.encodeLossy(img));
+    }
   }
   return candidates;
 }

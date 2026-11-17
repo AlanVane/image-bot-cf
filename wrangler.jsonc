@@ -45,12 +45,29 @@
     }
   ],
   "durable_objects": {
-    "bindings": [{ "name": "REPO_LOCK", "class_name": "RepoLock" }]
+    "bindings": [
+      { "name": "REPO_LOCK", "class_name": "RepoLock" },
+      { "name": "IMAGE_CONTAINER", "class_name": "ImageContainer" }
+    ]
   },
   "migrations": [
     {
       "tag": "v1",
       "new_sqlite_classes": ["RepoLock"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["ImageContainer"]
+    }
+  ],
+  // §6.3 超大图兜底：容器内 jpegtran/optipng/gifsicle + sharp（standard-1 = 0.5 vCPU/1GB 起）
+  "containers": [
+    {
+      "name": "image-container",
+      "class_name": "ImageContainer",
+      "image": "./container/Dockerfile",
+      "max_instances": 2,
+      "instance_type": "standard-1"
     }
   ],
   // ["*/30 * * * *" = 卡死 PR 巡检, "0 3 * * *" = schedule 重优化扫描] 见 DESIGN.md §2.4

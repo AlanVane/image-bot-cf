@@ -17,6 +17,7 @@ import {
 
 export { RepoLock } from "./do/repo-lock";
 export { OptimizeRun } from "./workflow/optimize-run";
+export { ImageContainer } from "./container/image-container";
 
 export default {
   async fetch(
