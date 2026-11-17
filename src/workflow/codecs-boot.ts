@@ -20,6 +20,7 @@ import jpegDecWasm from "@jsquash/jpeg/codec/dec/mozjpeg_dec.wasm";
 import jpegEncWasm from "@jsquash/jpeg/codec/enc/mozjpeg_enc.wasm";
 
 import { initCodecsFromModules } from "../optimize/dispatch";
+import { createGifCodec } from "../optimize/gif";
 import type { CodecSet } from "../types";
 
 /**
@@ -49,7 +50,11 @@ export function getCodecSet(): Promise<CodecSet> {
     pngWasm,
     jpegDecWasm,
     jpegEncWasm,
-  });
+  }).then((set) => ({
+    // GIF 是纯 JS codec（omggif+gifenc），不走 wasm 装配，完成后挂载（§9-R3）
+    ...set,
+    gif: createGifCodec(),
+  }));
   let guarded: Promise<CodecSet>;
   guarded = attempted.catch((err: unknown) => {
     // 自愈：装配失败不留毒缓存，让下一次调用（或步进重试）重新初始化。

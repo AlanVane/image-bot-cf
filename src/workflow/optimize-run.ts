@@ -21,6 +21,7 @@ import {
   compileIgnorePatterns,
   filterIgnoredPaths,
   parseImgbotConfig,
+  defaultConfig,
 } from "../config/imgbotconfig";
 import {
   type InstallationTokenCache,
@@ -37,6 +38,11 @@ import {
   type CommitAuthor,
   type FetchLike,
 } from "../github/gitdata";
+import {
+  WikiNotFoundError,
+  cloneWiki,
+  pushWikiChanges,
+} from "../github/wiki-git";
 import { optimizeImage } from "../optimize/dispatch";
 import type {
   CompressionResult,
@@ -197,6 +203,13 @@ interface SkippedImage {
 interface BatchResult {
   optimized: OptimizedImage[];
   skipped: SkippedImage[];
+}
+
+/** wiki 通道（§2.3 compressWiki）的单步产出。 */
+interface WikiPassOutcome {
+  status: "committed" | "skipped_nochange" | "skipped_guard";
+  imagesTotal: number;
+  optimizedCount: number;
 }
 
 interface CommitResult {
@@ -368,6 +381,234 @@ async function fetchHeadCommitSha(
 /* -------------------------------------------------------------------------- */
 
 export class OptimizeRun extends WorkflowEntrypoint<Env, RunDescriptor> {
+  /**
+   * §2.3 compressWiki 的 wiki 通道：clone → 优化 → 直接 push wiki 默认分支。
+   * 与主通道的差异：无 PR、无阈值门、无人类守卫（wiki 本来就是人编辑的）；
+   * 读写全走 git 协议（isomorphic-git）——REST Git Data API 不服务 `.wiki` 仓（§11-2 判别实验）。
+   * clone+优化+commit 合并为单步：wiki 极小，步进重试即整体重做（同内容 push 为 no-op）。
+   */
+  private async wikiPass(
+    event: WorkflowEvent<RunDescriptor>,
+    step: WorkflowStep,
+  ): Promise<void> {
+    const env = this.env;
+    const params = event.payload;
+    const runId = params.run_id;
+    const installationId = params.installation_id;
+    const slash = params.repo.indexOf("/");
+    const owner = params.repo.slice(0, slash);
+    const wikiRepo = params.repo.slice(slash + 1);
+
+    let terminalState: RunState = "done";
+    let failure: unknown = null;
+    let imagesTotal = 0;
+    let optimizedCount = 0;
+
+    try {
+      await step.do("wiki-init", STEP_CONFIG.initRun, async () => {
+        await this.heartbeat(runId, installationId, params.repo);
+        await env.DB.prepare(
+          "INSERT OR IGNORE INTO runs " +
+            "(run_id, installation_id, repo, trigger, state, created_at) " +
+            "VALUES (?, ?, ?, ?, ?, ?)",
+        )
+          .bind(
+            runId,
+            installationId,
+            params.repo,
+            params.trigger,
+            "scanning",
+            new Date().toISOString(),
+          )
+          .run();
+      });
+
+      const outcome = await step.do<WikiPassOutcome>(
+        "wiki-optimize-commit",
+        STEP_CONFIG.optimizeBatch,
+        async () => {
+          await this.heartbeat(runId, installationId, params.repo);
+          const { token } = await githubContext(env, installationId);
+
+          let cloned: Awaited<ReturnType<typeof cloneWiki>>;
+          try {
+            cloned = await cloneWiki({ owner, wikiRepo, token });
+          } catch (err) {
+            if (err instanceof WikiNotFoundError) {
+              return {
+                status: "skipped_guard" as const,
+                imagesTotal: 0,
+                optimizedCount: 0,
+              };
+            }
+            throw err;
+          }
+
+          // config 取 wiki 自己的 `.imgbotconfig`（wiki 与主仓独立配置，原版语义）
+          const rawConfig = cloned.files.get(".imgbotconfig");
+          const config = parseImgbotConfig(
+            rawConfig ? new TextDecoder().decode(rawConfig) : null,
+          );
+
+          const patterns = compileIgnorePatterns(config.ignoredFiles);
+          const allPaths = [...cloned.files.keys()].filter((p) =>
+            /\.(png|jpe?g|gif|svg)$/i.test(p),
+          );
+          const candidates = filterIgnoredPaths(allPaths, patterns);
+
+          const cacheRows = await env.DB.prepare(
+            "SELECT path, source_hash FROM image_cache " +
+              "WHERE installation_id = ? AND repo = ?",
+          )
+            .bind(installationId, params.repo)
+            .all<{ path: string; source_hash: string }>();
+          const seen = new Set(
+            (cacheRows.results ?? []).map((row) =>
+              cacheKey(row.path, row.source_hash),
+            ),
+          );
+
+          const pending: Array<{
+            path: string;
+            bytes: Uint8Array;
+            sourceHash: string;
+          }> = [];
+          for (const path of candidates) {
+            const bytes = cloned.files.get(path)!;
+            const sourceHash = await sha256Hex(bytes);
+            if (!seen.has(cacheKey(path, sourceHash))) {
+              pending.push({ path, bytes, sourceHash });
+            }
+          }
+
+          const codecs = await getCodecSet();
+          const changes = new Map<string, Uint8Array>();
+          const results: OptimizedImage[] = [];
+          for (const item of pending) {
+            const outcome = await optimizeImage(item.path, item.bytes, {
+              aggressive: config.aggressiveCompression,
+              codecs,
+            });
+            if (outcome.optimized && outcome.optimizedSize !== null) {
+              changes.set(item.path, outcome.optimized);
+              results.push({
+                path: item.path,
+                sourceSha: item.sourceHash,
+                resultHash: await sha256Hex(outcome.optimized),
+                beforeBytes: outcome.originalSize,
+                afterBytes: outcome.optimizedSize,
+                beforeKb: bytesToKb(outcome.originalSize),
+                afterKb: bytesToKb(outcome.optimizedSize),
+              });
+            } else if (
+              outcome.skipped === "not_smaller" ||
+              outcome.skipped === "decode_failed"
+            ) {
+              // 负向缓存（§7.3，wiki 同语义）
+              await env.DB.prepare(IMAGE_CACHE_UPSERT)
+                .bind(
+                  installationId,
+                  params.repo,
+                  item.path,
+                  item.sourceHash,
+                  null,
+                  item.bytes.length,
+                  null,
+                  new Date().toISOString(),
+                )
+                .run();
+            }
+          }
+
+          if (results.length === 0) {
+            return {
+              status: "skipped_nochange" as const,
+              imagesTotal: candidates.length,
+              optimizedCount: 0,
+            };
+          }
+
+          // wiki 无阈值门（§2.3）；commit message 同模板（原版语义）
+          const message = createCommitMessage(
+            results.map((r) => ({
+              title: `*${r.path}`,
+              sizeBeforeKb: r.beforeKb,
+              sizeAfterKb: r.afterKb,
+            })),
+          );
+          const pushed = await pushWikiChanges({
+            owner,
+            wikiRepo,
+            token,
+            branch: cloned.branch,
+            baseSha: cloned.headSha,
+            changes,
+            message,
+          });
+
+          const nowIso = new Date().toISOString();
+          for (const r of results) {
+            await env.DB.prepare(IMAGE_CACHE_UPSERT)
+              .bind(
+                installationId,
+                params.repo,
+                r.path,
+                r.sourceSha,
+                r.resultHash,
+                r.beforeBytes,
+                r.afterBytes,
+                nowIso,
+              )
+              .run();
+          }
+          await patchRun(env, runId, {
+            state: "done",
+            images_total: candidates.length,
+            images_optimized: results.length,
+            bytes_before: sumSizes(results).beforeBytes,
+            bytes_after: sumSizes(results).afterBytes,
+            commit_sha: pushed.commitSha,
+          });
+          return {
+            status: "committed" as const,
+            imagesTotal: candidates.length,
+            optimizedCount: results.length,
+          };
+        },
+      );
+
+      imagesTotal = outcome.imagesTotal;
+      optimizedCount = outcome.optimizedCount;
+      terminalState = outcome.status === "committed" ? "done" : outcome.status;
+    } catch (err) {
+      failure = err;
+      terminalState = "failed";
+    }
+
+    try {
+      await step.do("cleanup", STEP_CONFIG.cleanup, async () => {
+        await this.heartbeat(runId, installationId, params.repo);
+        const patch: RunPatch = {
+          state: terminalState,
+          images_total: imagesTotal,
+          images_optimized: optimizedCount,
+          finished_at: new Date().toISOString(),
+        };
+        if (failure) patch.error = errorText(failure);
+        await patchRun(env, runId, patch);
+        await this.repoLock(installationId, params.repo).finish(runId);
+      });
+    } catch (cleanupErr) {
+      if (!failure) throw cleanupErr;
+      console.error(
+        `[OptimizeRun] wiki cleanup failed for ${runId}`,
+        cleanupErr,
+      );
+    }
+
+    if (failure) throw failure;
+  }
+
   async run(
     event: WorkflowEvent<RunDescriptor>,
     step: WorkflowStep,
@@ -378,11 +619,19 @@ export class OptimizeRun extends WorkflowEntrypoint<Env, RunDescriptor> {
     const installationId = params.installation_id;
     const { owner, repo } = splitOwnerRepo(params.repo);
 
+    // §2.3 compressWiki：wiki 仓走独立通道（REST Git Data API 不服务 `.wiki` 仓——
+    // 判别实验见 §11-2；走 git 协议 isomorphic-git，直接推 wiki 默认分支，无 PR 无阈值门）
+    if (params.repo.endsWith(".wiki")) {
+      return this.wikiPass(event, step);
+    }
+
     let terminalState: RunState = "done";
     let failure: unknown = null;
     let imagesTotal = 0;
     let optimized: OptimizedImage[] = [];
     let commitSha: string | null = null;
+    // 确定赋值：load-config 步成功后才有值；失败路径 cleanup 里用 `loaded?.` 安全访问
+    let loaded!: LoadConfigResult;
 
     try {
       /* ---------------------------------------------------------------- */
@@ -414,7 +663,7 @@ export class OptimizeRun extends WorkflowEntrypoint<Env, RunDescriptor> {
       /* ---------------------------------------------------------------- */
       /* ② load-config：默认分支 + 根树 + `.imgbotconfig`                  */
       /* ---------------------------------------------------------------- */
-      const loaded = await step.do<LoadConfigResult>(
+      loaded = await step.do<LoadConfigResult>(
         "load-config",
         STEP_CONFIG.loadConfig,
         async () => {
@@ -969,6 +1218,21 @@ export class OptimizeRun extends WorkflowEntrypoint<Env, RunDescriptor> {
         };
         if (failure) patch.error = errorText(failure);
         await patchRun(env, runId, patch);
+
+        // §2.3 compressWiki：主仓 run 收尾后追加 wiki 通道（wiki run 不追加自己，防环）
+        if (!params.repo.endsWith(".wiki") && loaded?.config.compressWiki) {
+          await env.ROUTER.send(
+            {
+              run_id: crypto.randomUUID(),
+              installation_id: installationId,
+              repo: `${params.repo}.wiki`,
+              trigger: params.trigger,
+              base_ref: "",
+              delivery_id: params.delivery_id,
+            },
+            { contentType: "json" },
+          );
+        }
 
         // 释锁并把 pending（若有）转正；陈旧调用是幂等的（§5.4）
         await this.repoLock(installationId, params.repo).finish(runId);

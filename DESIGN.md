@@ -11,21 +11,21 @@
 
 ### 1.1 功能对等清单（P1–P3 完成 = 对等）
 
-- [ ] GitHub App 安装到 repo/org 后，对每个选中仓库自动开一个优化 PR
-- [ ] push 到默认分支且触碰图片或 `.imgbotconfig` 时自动重跑
-- [ ] 单一长驻 `imgbot` 分支；重复运行**原地更新 PR**（不新开）
-- [ ] 格式支持：`.png .jpg .jpeg .gif .svg`（大小写不敏感）
-- [ ] 默认无损；`aggressiveCompression: true` 切有损
-- [ ] commit message / PR body / 分支名 / PR 标题**逐字复刻**（§2.2）
-- [ ] `minKBReduced` 阈值（默认 10，≤0 表示无阈值）
-- [ ] `.imgbotconfig` 全字段：`schedule` / `ignoredFiles` / `aggressiveCompression` / `compressWiki` / `minKBReduced` / `prTitle` / `prBody`
-- [ ] 合并 PR（merge 或 squash，≤2 commits）后自动删除 `imgbot` 分支
-- [ ] 人类 push 到 `imgbot` 分支 → 中止运行（"branch has been modified by the user"）
-- [ ] 人类改坏 `imgbot` 分支后卡死 → 定时巡检恢复 PR（原版 30 分钟毒队列巡检）
-- [ ] `schedule: daily|weekly|monthly` 定期重优化
-- [ ] `compressWiki: true` 时同时优化 `<repo>.wiki`
+- [x] GitHub App 安装到 repo/org 后，对每个选中仓库自动开一个优化 PR
+- [x] push 到默认分支且触碰图片或 `.imgbotconfig` 时自动重跑
+- [x] 单一长驻 `imgbot` 分支；重复运行**原地更新 PR**（不新开）
+- [x] 格式支持：`.png .jpg .jpeg .gif .svg`（大小写不敏感）
+- [x] 默认无损；`aggressiveCompression: true` 切有损（JPEG/GIF 已通；PNG 有损暂缺——实测 wasm 方案 quality 为 no-op，见 §6.1）
+- [x] commit message / PR body / 分支名 / PR 标题**逐字复刻**（§2.2）
+- [x] `minKBReduced` 阈值（默认 10，≤0 表示无阈值）
+- [x] `.imgbotconfig` 全字段：`schedule` / `ignoredFiles` / `aggressiveCompression` / `compressWiki` / `minKBReduced` / `prTitle` / `prBody`
+- [x] 合并 PR（merge 或 squash，≤2 commits）后自动删除 `imgbot` 分支
+- [x] 人类 push 到 `imgbot` 分支 → 中止运行（"branch has been modified by the user"）
+- [x] 人类改坏 `imgbot` 分支后卡死 → 定时巡检恢复 PR（原版 30 分钟毒队列巡检）
+- [x] `schedule: daily|weekly|monthly` 定期重优化
+- [x] `compressWiki: true` 时同时优化 `<repo>.wiki`
 - [ ] 人工触发入口（原版仪表盘 "Request new optimization"）→ P3 仪表盘，P1 用 CLI/API 触发
-- [ ] PR 里能看到逐文件降幅表 + 总降幅（≥5% 才显示百分比）
+- [x] PR 里能看到逐文件降幅表 + 总降幅（≥5% 才显示百分比）
 
 ### 1.2 故意偏差登记（与原版不同，均为主动决策）
 
@@ -131,7 +131,7 @@ Details
 | `schedule`              | `"daily"\|"weekly"\|"monthly"` | 关       | 按周期重跑（门限判断见 D8）                                                                                                                                                               |
 | `ignoredFiles`          | string[]                       | `[]`     | 原版 `NormalizePattern` 语义（已对拍源码 + 上游 MSTest 向量）：`\`→`/`、`**`→`.*`、前导 `*` 补 `.`；**不转义正则元字符、子串匹配**；正则选项/大小写敏感性照抄原版。实现须逐行为等价（R8） |
 | `aggressiveCompression` | bool                           | `false`  | `false` = 仅无损；`true` = 无损+有损                                                                                                                                                      |
-| `compressWiki`          | bool                           | `false`  | 同时优化 `<repo>.wiki`，**直接 push 到 wiki，不开 PR**                                                                                                                                    |
+| `compressWiki`          | bool                           | `false`  | 同时优化 `<repo>.wiki`，**直接 push 到 wiki 默认分支，不开 PR 无阈值门**（实测：REST Git Data API 不服务 wiki 仓，走 git 协议/isomorphic-git）                                            |
 | `minKBReduced`          | int                            | `10`     | 总节省 < 阈值（KB）不开 PR；**≤0 = 无阈值（总是开）**                                                                                                                                     |
 | `prTitle`               | string                         | 内置标题 | 覆盖 PR 标题                                                                                                                                                                              |
 | `prBody`                | string                         | 内置模板 | 覆盖 PR body（支持 magic tags）                                                                                                                                                           |
@@ -499,7 +499,7 @@ DoD：仪表盘操作与原版 `Web/` 行为对齐；多租户限额生效。
 ## 11. 开放问题（动手前需实测）
 
 1. ✅ **已定案并落地（2026-11-17）**：走 §4.3 方案 A（GraphQL `createCommitOnBranch`），真实流水线 commit `f8e5ac7` 实测 `verified: true`（GitHub PGP 签名）。二进制 base64 保真、文本同规均已实测；备胎 B（openpgp.js）封存
-2. wiki 仓（`owner/repo.wiki`）能否走 Git Data API 写入？→ 决定 R5 路线
+2. ✅ **已实测（2026-11-17）**：REST Git Data API **不服务** wiki 仓（`github/gitignore.wiki` 等三个有内容的公共 wiki 全部 404，判别性实验）→ R5 走 **git 协议**（isomorphic-git，官方支持 Workers），wiki 模式 = clone→优化→直接 push 默认分支
 3. `@jsquash` 各 codec 在 workerd 实测 CPU/内存（本地基准是 Node V8，同引擎但需真环境确认 8MP 边界值）；并实测 workerd 是否提供全局 `ImageData`（jsquash 解码内部 `new ImageData`，缺则在 codec init 补 ~5 行 shim；类型已用 `ImageDataLike` 解耦）
 4. oxipng/jpegtran 的 wasm 构建产物体积与 SIMD 支持
 5. GPL 编解码的许可策略（R7）

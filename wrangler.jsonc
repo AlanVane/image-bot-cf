@@ -3,6 +3,8 @@
   "name": "image-bot-cf",
   "main": "src/index.ts",
   "compatibility_date": "2026-11-01",
+  // isomorphic-git 全局 Buffer 依赖（wiki 模式，§2.3 compressWiki）
+  "compatibility_flags": ["nodejs_compat"],
   // Workflow/Queue 步级 CPU 上限（付费档最大 5min；§5.3 optimize-batch 依赖此值）
   "limits": {
     "cpu_ms": 300000
