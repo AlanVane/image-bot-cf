@@ -5,8 +5,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-const read = (p: string) =>
-  readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
+const read = (p: string) => readFileSync(p, "utf8");
 
 describe("public/ 静态资源完整性", () => {
   it("styles.css 花括号配平（丢 } = 整页裸奔）", () => {
