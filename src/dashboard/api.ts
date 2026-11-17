@@ -12,12 +12,14 @@
  * 约定：
  * - 非本模块路由（含 `/api/hook`、`/api/auth/*`、非 `/api`）返回 `null` 交上游分流；
  * - 错误体统一 `{"error": "..."}`；未登录 401、不可见仓库 403、body 非法 400；
- * - 仓库可见性与 installation 归属一律用**用户 token** 判（§4.1：仓库资源需
- *   installation token，但这里只做"这个人能否看到这个仓"，用户 token 才是正确主体）；
+ * - **可见性**用用户 token 判（"这个人能否看到这个仓"）；**installation 归属**是
+ *   App 视角查询（`GET /repos/{o}/{r}/installation` 只认 App 身份，用户 token 会被
+ *   上游拒绝——2026-11-17 真仓实测 502 根因），用 App JWT；两者都过才放行（§4.1）；
  * - fetch 与 `requireUser` 均可注入，便于测试（`ApiDeps`）。
  */
 import { GITHUB_API_BASE, GITHUB_API_VERSION } from "../github/gitdata";
 import type { Env, RunDescriptor } from "../types";
+import { generateAppJwt } from "../github/auth";
 import { requireUser, type SessionUser } from "./auth";
 
 /* -------------------------------------------------------------------------- */
@@ -409,6 +411,7 @@ interface RepoAccess {
 }
 
 async function resolveRepoAccess(
+  env: Env,
   user: SessionUser,
   owner: string,
   name: string,
@@ -416,17 +419,20 @@ async function resolveRepoAccess(
 ): Promise<RepoAccess | { forbidden: true }> {
   const repoPath = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
 
+  // 可见性 = 用户视角（用户 token）
   const repoRes = await ghRequest(deps, user.token, repoPath);
   if (repoRes.status === 404) return { forbidden: true };
   if (!repoRes.ok) {
     throw new GithubRequestError(repoRes.status, `GET ${repoPath}`);
   }
 
-  const installRes = await ghRequest(
-    deps,
-    user.token,
-    `${repoPath}/installation`,
+  // installation 归属 = App 视角：该端点只认 App 身份（JWT/安装 token），
+  // 用户 token 会被上游拒绝（2026-11-17 真仓实测）→ 用 App JWT。
+  const appJwt = await generateAppJwt(
+    env.GITHUB_APP_ID,
+    env.GITHUB_PRIVATE_KEY,
   );
+  const installRes = await ghRequest(deps, appJwt, `${repoPath}/installation`);
   if (installRes.status === 404 || installRes.status === 403) {
     // 仓库可见但 App 未安装 → 与不可操作同义。
     return { forbidden: true };
@@ -598,7 +604,7 @@ async function optimizeRepo(
   fullName: string,
   deps: ApiDeps,
 ): Promise<Response> {
-  const access = await resolveRepoAccess(user, owner, name, deps);
+  const access = await resolveRepoAccess(env, user, owner, name, deps);
   if ("forbidden" in access) {
     return jsonResponse({ error: "forbidden" }, 403);
   }
@@ -691,7 +697,7 @@ async function updateSettings(
   const patch = parseSettingsPatch(raw);
   if (!patch) return jsonResponse({ error: "invalid_body" }, 400);
 
-  const access = await resolveRepoAccess(user, owner, name, deps);
+  const access = await resolveRepoAccess(env, user, owner, name, deps);
   if ("forbidden" in access) {
     return jsonResponse({ error: "forbidden" }, 403);
   }
@@ -762,7 +768,7 @@ async function repoStats(
   fullName: string,
   deps: ApiDeps,
 ): Promise<Response> {
-  const access = await resolveRepoAccess(user, owner, name, deps);
+  const access = await resolveRepoAccess(env, user, owner, name, deps);
   if ("forbidden" in access) {
     return jsonResponse({ error: "forbidden" }, 403);
   }

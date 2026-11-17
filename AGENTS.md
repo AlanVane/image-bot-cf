@@ -45,7 +45,7 @@ node /tmp/opencode/trigger-real.mjs   # 或项目内等价脚本
 
 ### GitHub API
 
-- 仓库资源用 **installation token**；App JWT 只够 `/app/*` 系端点。
+- 仓库资源用 **installation token**；App JWT 只够 `/app/*` 系端点。例外：`GET /repos/{o}/{r}/installation`（查 installation 归属）是 **App 视角**端点，只认 JWT/安装 token——用户 token 会被拒（2026-11-17 仪表盘真仓踩坑）；"这个用户能否看到该仓"用用户 token 查 `GET /repos/{o}/{r}`，两个主体各查各的。
 - PR/ref API 只认**裸分支名**（`imgbot`）——`ensureRef` 的 `heads/imgbot` 形式透传过去就是 422。
 - **force-push 让 PR 瞬间变空会触发 GitHub 自动关闭**——commit 走暂存分支中转（D5）：commit 落 `imgbot-staging`，再一次性 force 落 `imgbot`。
 - **REST Git Data API 不服务 `.wiki` 仓**（判别实验见 DESIGN §11）——wiki 走 `wiki-git.ts`（isomorphic-git，需 `nodejs_compat`）。

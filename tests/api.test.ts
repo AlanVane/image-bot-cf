@@ -349,6 +349,36 @@ function jsonResponse(body: unknown, status = 200, headers: HeadersInit = {}) {
   });
 }
 
+/** 测试用 RSA 密钥（仅 fixture；generateAppJwt 走真实 RS256 签名路径）。 */
+const TEST_KEY_PEM = `-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCpwwO+5tuKCt8B
+NNJYrr05tRd4l54ta60GMuE7P0wLKv2/+VW/AqnwD6rxRsP6+cKc3B6me40dLG8a
+e7fLAvgR2omAGpy1mMwfKkKdMmHIMxWHbYqBbVthgNv8vsjTces4XTMEPfB14mm9
+JHxJJA3YLUqIQW2beJuh28+SOnSQgsgZABssSkt53zCCAvhDglc5nhedK5w06/5p
+Uafg0KOyOK63/9iQKzBIfIyFMupvMYvjM4J27/xrFN08xN4DN0mXGPNfKf0InGxZ
+syBJwzMHC0wS5NxnfdcYj1rSiLmMICvzX+8deeaX5N7xYbIwptPmEmWhlbhC59pI
+5dtmnnhJAgMBAAECggEADIKL/J3rkL0jWOXpGFLsK9v9+kuGAwfbzMikE2cjNfF5
+mJOJr5VFK6Uj7jrOR2jvX/rSoWcaa4tyNovma+XwnPQzTMbpRHKZnDRTi10Cmqu1
+CvFWExqZcNJ7o6D1kKtk75biow3jcfR44VDWfddT09nmk6rqplnZcjCOF9MJ8vop
+YzbD/Hp6qdRwflAYPMBT5E1nZBxkmRRng6MtGHaaWjJldD03h6McX5/Gm213jILQ
+mVbizUAlWjWYT/xycsqIh6wgbw/N7yNsY8nhs5JIN3UVm18SeBY+rA57lXca499t
+dJkLgdJHZ3fxtWD1F0ZLSqKCSMrOdPvkEo8aoWLg2QKBgQDlDktdIDGqbyPUhvS+
+Rzf6UuOHYsFhByad0awPNleoatJpsAls9rKVwitH/74LS4nCRf6na54wT6/DMiHu
+QeIesPZLHBIJYlrIVsz6mLCynh3xe4zNa1xQwAd3SL2GmnwF9jY1GG57JadxStRC
+i+tNG2t0IVFnz2vtPW63oiMYzQKBgQC9uyj6Mqk55jsQWh61jeYXbZB3E0fD4wDz
+7LbCKdbXWbNO4iHzprBkvG4k/163OcsVssE9GdiraLWQ6B1jMWsK7KxrFNTzTtP3
+bxl8TvuPgRvxsQsMCNdoEAId5v9duOE44oALO/+PgTj+KJkFFgQJkKVbgAzNWRgp
+qV2UfRSNbQKBgQDWez8YkYfQFsfPPxu3fMqu7KS/Zjq7l02So/3gNLt6KaSjcEIz
+NQHed3W9snyK6Q2yy4X70SrMBCIJvkzFZA3PPVcy17MP9HgbdiP0V7vFVYemUlFz
+HJ/RwS58hLFrdAbEMltp9lmlmImk7TO6qHgJuK4yjOxEL5bZDBg7fWgt1QKBgBL0
+JoTQGM267T2V8ylp8ol2nY73sxyjic3UYPGGonrC8EG6H3Aqv8ZgeJRjmn+tW1dg
+kyNaeKWvASxns7/cCPh/aj4MR7XCszQtuhsL/N96I2OCrzrVi0dPChcYo3wmYwF+
+xxHYPZCFdT8WqSqz51VZSNuaMC03cE2BKOMTl8EFAoGBAKGoOXHnbynE3IBT6o+N
+8Do36kj9FB1HraS8cuJ9xaBCl2Y0U3resTAdKXQE/ydK9oVmOgNTrnOGFBfBMDy8
+RY4dQJwkJwJWBetXoroje9KzBoskgwkoJrhAkDZmpkDPQKzIZa8BQTLkKA4D0JZH
+FhE5bYB/GjgmvqyUcaStKpp8
+-----END PRIVATE KEY-----`;
+
 const USER: SessionUser = {
   login: "octocat",
   userId: 583231,
@@ -378,6 +408,8 @@ function makeHarness(options: {
     DB: db,
     REPO_LOCK: lock,
     GITHUB_APP_SLUG: options.appSlug,
+    GITHUB_APP_ID: "1",
+    GITHUB_PRIVATE_KEY: TEST_KEY_PEM,
   } as unknown as Env;
 
   return {
@@ -737,12 +769,34 @@ describe("POST /api/repos/{owner}/{name}/optimize", () => {
       base_ref: "",
     });
 
-    // 可见性与 installation 都用用户 token 查。
+    // /user/* 系端点必须用用户 token（不是 installation token）；
+    // /installation 归属查询改用 App JWT（见"主体分离"用例）。
     expect(
-      harness.fetchCalls.every(
-        (call) => call.authorization === "Bearer user-token",
-      ),
+      harness.fetchCalls
+        .filter((call) => call.url.includes("/user/"))
+        .every((call) => call.authorization === "Bearer user-token"),
     ).toBe(true);
+  });
+
+  it("installation 归属用 App JWT、可见性用用户 token（§4.1 主体分离）", async () => {
+    const harness = makeHarness({ handlers: repoHandlers("o/r") });
+
+    const res = await callApi(harness, "/api/repos/o/r/optimize", {
+      method: "POST",
+    });
+    expect(res?.status).toBe(202);
+
+    const repoCall = harness.fetchCalls.find((c) =>
+      c.url.endsWith("/repos/o/r"),
+    );
+    const installCall = harness.fetchCalls.find((c) =>
+      c.url.includes("/installation"),
+    );
+    expect(repoCall?.authorization).toBe("Bearer user-token");
+    expect(installCall?.authorization).toMatch(
+      /^Bearer [\w-]+\.[\w-]+\.[\w-]+$/,
+    );
+    expect(installCall?.authorization).not.toBe("Bearer user-token");
   });
 
   it("配额用尽（D10）→ 429 {error:'quota_exceeded'}", async () => {
