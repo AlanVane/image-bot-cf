@@ -20,17 +20,19 @@
             <span>Imgbot</span>
           </a>
           <div class="docs-topbar-note">Repository guide</div>
-          <a class="docs-home-link" href="/">Back to dashboard <span aria-hidden="true">↗</span></a>
+          <a class="docs-home-link" href="/"
+            >Back to dashboard <span aria-hidden="true">↗</span></a
+          >
         </div>
       </header>
 
       <main>
         <section class="docs-hero" aria-labelledby="docs-title">
           <div class="docs-hero-copy">
-            <p class="eyebrow">A practical field guide</p>
             <h1 id="docs-title">Imgbot documentation</h1>
             <p class="docs-intro">
-              Everything you need to configure and run Imgbot on your repositories.
+              Everything you need to configure and run Imgbot on your
+              repositories.
             </p>
           </div>
           <div class="docs-hero-seal" aria-hidden="true">
@@ -47,23 +49,40 @@
               <li><a href="#supported-formats">Supported formats</a></li>
               <li><a href="#configuration">.imgbotconfig</a></li>
               <li><a href="#dashboard-settings">Dashboard settings</a></li>
-              <li><a href="#authorization">Authorization &amp; permissions</a></li>
+              <li>
+                <a href="#authorization">Authorization &amp; permissions</a>
+              </li>
               <li><a href="#example">Configuration example</a></li>
             </ol>
           </nav>
 
           <article class="docs-content">
-            <section class="docs-section" id="how-it-works" aria-labelledby="how-title">
+            <section
+              class="docs-section"
+              id="how-it-works"
+              aria-labelledby="how-title"
+            >
               <div class="docs-section-heading">
                 <span class="docs-section-index" aria-hidden="true">01</span>
                 <h2 id="how-title">How it works</h2>
               </div>
               <p>
-                Install the GitHub App, push images to your default branch, and Imgbot opens a pull request with the lighter versions. Repeated runs update that same pull request in place — you never see duplicate PRs. Merge it (merge or squash) and Imgbot deletes its branch; if someone pushes to the <code>imgbot</code> branch by hand, Imgbot aborts the run politely and leaves the branch alone. Only strictly smaller files replace the originals, and every result is decode-validated first.
+                Install the GitHub App, push images to your default branch, and
+                Imgbot opens a pull request with the lighter versions. Repeated
+                runs update that same pull request in place — you never see
+                duplicate PRs. Merge it (merge or squash) and Imgbot deletes its
+                branch; if someone pushes to the <code>imgbot</code> branch by
+                hand, Imgbot aborts the run politely and leaves the branch
+                alone. Only strictly smaller files replace the originals, and
+                every result is decode-validated first.
               </p>
             </section>
 
-            <section class="docs-section" id="supported-formats" aria-labelledby="formats-title">
+            <section
+              class="docs-section"
+              id="supported-formats"
+              aria-labelledby="formats-title"
+            >
               <div class="docs-section-heading">
                 <span class="docs-section-index" aria-hidden="true">02</span>
                 <h2 id="formats-title">Supported formats</h2>
@@ -75,33 +94,57 @@
                 <li><code>.gif</code></li>
                 <li><code>.svg</code></li>
               </ul>
-              <p class="docs-note">File extensions are matched case-insensitively.</p>
+              <p class="docs-note">
+                File extensions are matched case-insensitively.
+              </p>
               <p>
-                Lossless by default; <code>aggressiveCompression</code> switches to lossy variants where available. Oversized images (≥8MP or ≥15MB) are handled by a separate container lane. Under the hood: svgo for SVG, lossless recompression for PNG, Huffman optimization plus metadata stripping for JPEG, and palette-preserving re-encoding for GIF.
+                Lossless by default; <code>aggressiveCompression</code> switches
+                to lossy variants where available. Oversized images (≥8MP or
+                ≥15MB) are handled by a separate container lane. Under the hood:
+                svgo for SVG, lossless recompression for PNG, Huffman
+                optimization plus metadata stripping for JPEG, and
+                palette-preserving re-encoding for GIF.
               </p>
             </section>
 
-            <section class="docs-section" id="configuration" aria-labelledby="configuration-title">
+            <section
+              class="docs-section"
+              id="configuration"
+              aria-labelledby="configuration-title"
+            >
               <div class="docs-section-heading">
                 <span class="docs-section-index" aria-hidden="true">03</span>
-                <h2 id="configuration-title"><code>.imgbotconfig</code> reference</h2>
+                <h2 id="configuration-title">
+                  <code>.imgbotconfig</code> reference
+                </h2>
               </div>
               <p>
-                Place <code>.imgbotconfig</code> at the repository root. All fields are optional.
+                Place <code>.imgbotconfig</code> at the repository root. All
+                fields are optional.
               </p>
 
               <dl class="config-list">
                 <div class="config-field">
                   <dt><code>schedule</code></dt>
                   <dd>
-                    <p><code>daily</code> | <code>weekly</code> | <code>monthly</code> — limits PRs to at most once a day/week/month. This is ideal for projects that receive many image updates and would rather batch the optimizations together; by default Imgbot opens PRs as images arrive.</p>
+                    <p>
+                      <code>daily</code> | <code>weekly</code> |
+                      <code>monthly</code> — limits PRs to at most once a
+                      day/week/month. This is ideal for projects that receive
+                      many image updates and would rather batch the
+                      optimizations together; by default Imgbot opens PRs as
+                      images arrive.
+                    </p>
                   </dd>
                 </div>
 
                 <div class="config-field">
                   <dt><code>ignoredFiles</code></dt>
                   <dd>
-                    <p>Patterns to skip. Accepts regex patterns and simple globbing. When ignoring by filename no path is necessary.</p>
+                    <p>
+                      Patterns to skip. Accepts regex patterns and simple
+                      globbing. When ignoring by filename no path is necessary.
+                    </p>
                     <ul class="docs-patterns">
                       <li>
                         <span>By extension</span>
@@ -129,78 +172,157 @@
 
                 <div class="config-field">
                   <dt><code>aggressiveCompression</code></dt>
-                  <dd><p><code>true</code> | <code>false</code> (default false).</p></dd>
+                  <dd>
+                    <p>
+                      <code>true</code> | <code>false</code> (default false).
+                    </p>
+                  </dd>
                 </div>
 
                 <div class="config-field">
                   <dt><code>compressWiki</code></dt>
                   <dd>
-                    <p><code>true</code> | <code>false</code> — also optimizes images in the repository wiki. Wiki images are updated directly on the default branch (GitHub wikis have no pull requests).</p>
+                    <p>
+                      <code>true</code> | <code>false</code> — also optimizes
+                      images in the repository wiki. Wiki images are updated
+                      directly on the default branch (GitHub wikis have no pull
+                      requests).
+                    </p>
                   </dd>
                 </div>
 
                 <div class="config-field">
                   <dt><code>minKBReduced</code></dt>
                   <dd>
-                    <p>Minimum total KB saved before opening/updating a PR (default 10). <code>0</code> or <code>null</code> disables the threshold. It also limits how often Imgbot opens PRs over time.</p>
+                    <p>
+                      Minimum total KB saved before opening/updating a PR
+                      (default 10). <code>0</code> or <code>null</code> disables
+                      the threshold. It also limits how often Imgbot opens PRs
+                      over time.
+                    </p>
                   </dd>
                 </div>
 
                 <div class="config-field">
                   <dt><code>prTitle</code></dt>
                   <dd>
-                    <p>Custom PR title. <strong>Free for everyone in this build.</strong> Accepts any string written in GitHub markdown. Default: <code>[ImgBot] Optimize images</code>.</p>
+                    <p>
+                      Custom PR title.
+                      <strong>Free for everyone in this build.</strong> Accepts
+                      any string written in GitHub markdown. Default:
+                      <code>[ImgBot] Optimize images</code>.
+                    </p>
                   </dd>
                 </div>
 
                 <div class="config-field">
                   <dt><code>prBody</code></dt>
                   <dd>
-                    <p>Custom PR body with <code>{optimization_ratio}</code> and <code>{optimization_details}</code> magic tags. <strong>Free for everyone in this build.</strong> Accepts any string written in GitHub markdown.</p>
+                    <p>
+                      Custom PR body with <code>{optimization_ratio}</code> and
+                      <code>{optimization_details}</code> magic tags.
+                      <strong>Free for everyone in this build.</strong> Accepts
+                      any string written in GitHub markdown.
+                    </p>
                   </dd>
                 </div>
               </dl>
             </section>
 
-            <section class="docs-section" id="dashboard-settings" aria-labelledby="dashboard-title">
+            <section
+              class="docs-section"
+              id="dashboard-settings"
+              aria-labelledby="dashboard-title"
+            >
               <div class="docs-section-heading">
                 <span class="docs-section-index" aria-hidden="true">04</span>
                 <h2 id="dashboard-title">Dashboard settings</h2>
               </div>
               <div class="branch-note">
                 <span class="branch-note-label">Default branch override</span>
-                <p>If you want Imgbot to look after a different branch instead of the default for the repo.</p>
+                <p>
+                  If you want Imgbot to look after a different branch instead of
+                  the default for the repo.
+                </p>
               </div>
               <ul class="dashboard-features">
-                <li><span aria-hidden="true">↗</span><span>Repo enable/disable toggle</span></li>
-                <li><span aria-hidden="true">↗</span><span>Manual “Request new optimization”</span></li>
-                <li><span aria-hidden="true">↗</span><span>Run history</span></li>
+                <li>
+                  <span aria-hidden="true">↗</span
+                  ><span>Repo enable/disable toggle</span>
+                </li>
+                <li>
+                  <span aria-hidden="true">↗</span
+                  ><span>Manual “Request new optimization”</span>
+                </li>
+                <li>
+                  <span aria-hidden="true">↗</span><span>Run history</span>
+                </li>
               </ul>
             </section>
 
-            <section class="docs-section" id="authorization" aria-labelledby="authorization-title">
+            <section
+              class="docs-section"
+              id="authorization"
+              aria-labelledby="authorization-title"
+            >
               <div class="docs-section-heading">
                 <span class="docs-section-index" aria-hidden="true">05</span>
-                <h2 id="authorization-title">Authorization &amp; permissions</h2>
+                <h2 id="authorization-title">
+                  Authorization &amp; permissions
+                </h2>
               </div>
               <p>
-                After installation, Imgbot requests a short-lived installation token from GitHub and uses it only to read image files, push optimized commits, and open pull requests. The requested permissions are:
+                After installation, Imgbot requests a short-lived installation
+                token from GitHub and uses it only to read image files, push
+                optimized commits, and open pull requests. The requested
+                permissions are:
               </p>
               <ul class="dashboard-features">
-                <li><span aria-hidden="true">↗</span><span><strong>Code: read &amp; write</strong> — to update image files</span></li>
-                <li><span aria-hidden="true">↗</span><span><strong>Pull requests: read &amp; write</strong> — to open and update the optimization PR</span></li>
-                <li><span aria-hidden="true">↗</span><span><strong>Metadata: read</strong> — to list repository details</span></li>
+                <li>
+                  <span aria-hidden="true">↗</span
+                  ><span
+                    ><strong>Code: read &amp; write</strong> — to update image
+                    files</span
+                  >
+                </li>
+                <li>
+                  <span aria-hidden="true">↗</span
+                  ><span
+                    ><strong>Pull requests: read &amp; write</strong> — to open
+                    and update the optimization PR</span
+                  >
+                </li>
+                <li>
+                  <span aria-hidden="true">↗</span
+                  ><span
+                    ><strong>Metadata: read</strong> — to list repository
+                    details</span
+                  >
+                </li>
               </ul>
-              <p>Commits land as the Imgbot bot with a verified signature (green Verified badge). If the required permissions ever change, GitHub will ask you to accept them first.</p>
-              <p>You can uninstall the GitHub App at any time to revoke all access immediately.</p>
+              <p>
+                Commits land as the Imgbot bot with a verified signature (green
+                Verified badge). If the required permissions ever change, GitHub
+                will ask you to accept them first.
+              </p>
+              <p>
+                You can uninstall the GitHub App at any time to revoke all
+                access immediately.
+              </p>
             </section>
 
-            <section class="docs-section docs-example-section" id="example" aria-labelledby="example-title">
+            <section
+              class="docs-section docs-example-section"
+              id="example"
+              aria-labelledby="example-title"
+            >
               <div class="docs-section-heading">
                 <span class="docs-section-index" aria-hidden="true">06</span>
                 <h2 id="example-title">Configuration example</h2>
               </div>
-              <p>A complete <code>.imgbotconfig</code> with each available field:</p>
+              <p>
+                A complete <code>.imgbotconfig</code> with each available field:
+              </p>
               <pre class="docs-json"><code>{
   "schedule": "weekly",
   "ignoredFiles": [
@@ -224,8 +346,13 @@
         <section class="docs-closing" aria-labelledby="closing-title">
           <div class="docs-closing-inner">
             <p class="eyebrow">A little less weight on every image</p>
-            <h2 id="closing-title">Optimize your images from now until forever.</h2>
-            <a class="button button-primary docs-sign-in" href="/api/auth/login">
+            <h2 id="closing-title">
+              Optimize your images from now until forever.
+            </h2>
+            <a
+              class="button button-primary docs-sign-in"
+              href="/api/auth/login"
+            >
               Sign in <span class="button-arrow" aria-hidden="true">↗</span>
             </a>
           </div>
