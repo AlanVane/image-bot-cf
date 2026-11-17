@@ -7,5 +7,5 @@ dist/
 # 覆盖全局 gitignore（~/.config/git/ignore）：这两类必须入库
 # - package-lock.json：CI 的 npm ci 依赖它（2026-11-17 CI 红灯根因）
 # - src/optimize/vendor/：vendored jpegtran wasm + 胶水（构建产物但随仓分发）
-!package-lock.json
+!/package-lock.json
 !src/optimize/vendor/
