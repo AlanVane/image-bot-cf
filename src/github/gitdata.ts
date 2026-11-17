@@ -10,15 +10,18 @@
  */
 
 import type { TreeBlob } from "../types";
+import {
+  GITHUB_API_BASE,
+  GithubNetworkError,
+  githubRequest,
+  type FetchLike,
+  type GithubHttpResult,
+} from "./http";
 
-/** 与 `typeof fetch` 结构一致；测试注入 mock 时使用。 */
-export type FetchLike = (
-  input: string | URL | Request,
-  init?: RequestInit,
-) => Promise<Response>;
-
-export const GITHUB_API_BASE = "https://api.github.com";
-export const GITHUB_API_VERSION = "2022-11-28";
+// 传输层已上移到 ./http.ts；这里保留转出，既有 import 路径（github/auth.ts、
+// tests/github.test.ts 等）不用改。
+export { GITHUB_API_BASE, GITHUB_API_VERSION } from "./http";
+export type { FetchLike } from "./http";
 
 export interface GithubApiErrorOptions {
   /** HTTP 状态码；网络层失败（fetch 抛错）用 0。 */
@@ -140,18 +143,15 @@ function requireSha(body: unknown, what: string): string {
   return sha;
 }
 
-function describeError(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return String(err);
-}
-
 /**
  * 把非 2xx 响应映射为类型化错误。消息体只在能解析出 `message` 时使用，避免把整页 HTML 塞进日志。
+ * `bodyText`：响应体已被传输层读走时传入原始文本（Response 的 body 不可重复读取）。
  */
 export async function toGithubApiError(
   res: Response,
   method: string,
   path: string,
+  bodyText?: string,
 ): Promise<GithubApiError> {
   const status = res.status;
   const retryAfterHeader = res.headers.get("retry-after");
@@ -161,7 +161,7 @@ export async function toGithubApiError(
   let bodyMessage = "";
   let bodyRetryAfter: number | undefined;
   try {
-    const text = await res.text();
+    const text = bodyText !== undefined ? bodyText : await res.text();
     if (text) {
       try {
         const parsed = JSON.parse(text) as {
@@ -248,39 +248,50 @@ export class GitDataClient {
   private async request(
     method: string,
     path: string,
-    opts: { accept?: string; body?: unknown } = {},
-  ): Promise<Response> {
-    const headers: Record<string, string> = {
-      authorization: `Bearer ${this.token}`,
-      accept: opts.accept ?? "application/vnd.github+json",
-      "x-github-api-version": GITHUB_API_VERSION,
-      "user-agent": "image-bot-cf",
-    };
+    opts: { accept?: string; body?: unknown; raw?: boolean } = {},
+  ): Promise<GithubHttpResult> {
     const serialized =
       opts.body !== undefined ? JSON.stringify(opts.body) : undefined;
-    if (serialized !== undefined) {
-      headers["content-type"] = "application/json";
-    }
     const init: RequestInit =
       serialized !== undefined
-        ? { method, headers, body: serialized }
-        : { method, headers };
+        ? {
+            method,
+            headers: { "content-type": "application/json" },
+            body: serialized,
+          }
+        : { method };
 
-    let res: Response;
+    let result: GithubHttpResult;
     try {
-      res = await this.fetchImpl(`${this.apiBase}${path}`, init);
-    } catch (err) {
-      throw new GithubApiError({
-        status: 0,
-        message: `GitHub ${method} ${path} network error: ${describeError(err)}`,
-        retryable: true,
-        cause: err,
+      result = await githubRequest({
+        token: this.token,
+        path,
+        init,
+        fetchImpl: this.fetchImpl,
+        base: this.apiBase,
+        accept: opts.accept,
+        raw: opts.raw === true,
       });
+    } catch (err) {
+      if (err instanceof GithubNetworkError) {
+        throw new GithubApiError({
+          status: 0,
+          message: err.message,
+          retryable: true,
+          cause: err.cause ?? err,
+        });
+      }
+      throw err;
     }
-    if (!res.ok) {
-      throw await toGithubApiError(res, method, path);
+    if (!result.ok) {
+      throw await toGithubApiError(
+        result.response,
+        method,
+        path,
+        result.text ?? undefined,
+      );
     }
-    return res;
+    return result;
   }
 
   /**
@@ -292,11 +303,11 @@ export class GitDataClient {
     repo: string,
     sha: string,
   ): Promise<{ tree: TreeBlob[]; truncated: boolean }> {
-    const res = await this.request(
+    const out = await this.request(
       "GET",
       `${repoPath(owner, repo, `/git/trees/${encodeSegment(sha)}`)}?recursive=1`,
     );
-    const body = (await res.json()) as {
+    const body = out.body as {
       tree?: TreeEntryResponse[];
       truncated?: unknown;
     };
@@ -321,12 +332,12 @@ export class GitDataClient {
     repo: string,
     sha: string,
   ): Promise<Uint8Array> {
-    const res = await this.request(
+    const out = await this.request(
       "GET",
       repoPath(owner, repo, `/git/blobs/${encodeSegment(sha)}`),
-      { accept: "application/vnd.github.raw" },
+      { accept: "application/vnd.github.raw", raw: true },
     );
-    return new Uint8Array(await res.arrayBuffer());
+    return new Uint8Array(await out.response.arrayBuffer());
   }
 
   /**
@@ -344,7 +355,7 @@ export class GitDataClient {
     if (entries.length === 0) {
       throw new Error("createTreeWithContent requires at least one entry");
     }
-    const res = await this.request(
+    const out = await this.request(
       "POST",
       repoPath(owner, repo, "/git/trees"),
       {
@@ -359,7 +370,7 @@ export class GitDataClient {
         },
       },
     );
-    return requireSha(await res.json(), "POST /git/trees");
+    return requireSha(out.body, "POST /git/trees");
   }
 
   /**
@@ -372,7 +383,7 @@ export class GitDataClient {
     repo: string,
     bytes: Uint8Array,
   ): Promise<string> {
-    const res = await this.request(
+    const out = await this.request(
       "POST",
       repoPath(owner, repo, "/git/blobs"),
       {
@@ -382,7 +393,7 @@ export class GitDataClient {
         },
       },
     );
-    return requireSha(await res.json(), "POST /git/blobs");
+    return requireSha(out.body, "POST /git/blobs");
   }
 
   /**
@@ -398,7 +409,7 @@ export class GitDataClient {
     if (entries.length === 0) {
       throw new Error("createTreeWithShas requires at least one entry");
     }
-    const res = await this.request(
+    const out = await this.request(
       "POST",
       repoPath(owner, repo, "/git/trees"),
       {
@@ -413,7 +424,7 @@ export class GitDataClient {
         },
       },
     );
-    return requireSha(await res.json(), "POST /git/trees");
+    return requireSha(out.body, "POST /git/trees");
   }
 
   /**
@@ -438,7 +449,7 @@ export class GitDataClient {
     commit { oid }
   }
 }`;
-    const res = await this.request("POST", "/graphql", {
+    const out = await this.request("POST", "/graphql", {
       body: {
         query,
         variables: {
@@ -469,7 +480,7 @@ export class GitDataClient {
         },
       },
     });
-    const json = (await res.json()) as {
+    const json = out.body as {
       data?: { createCommitOnBranch?: { commit?: { oid?: unknown } } };
       errors?: Array<{ message?: string; type?: string }>;
     };
@@ -493,11 +504,11 @@ export class GitDataClient {
     ref: string,
   ): Promise<string> {
     // 注意：分支名里的 `/` 保持未编码（GitHub 的 `:ref` 语义），故不用 encodeSegment。
-    const res = await this.request(
+    const out = await this.request(
       "GET",
       `/repos/${encodeSegment(owner)}/${encodeSegment(repo)}/git/ref/${normalizeRef(ref)}`,
     );
-    const body = (await res.json()) as { object?: { sha?: unknown } };
+    const body = out.body as { object?: { sha?: unknown } };
     if (typeof body.object?.sha !== "string") {
       throw new GithubApiError({
         status: 502,
@@ -514,11 +525,11 @@ export class GitDataClient {
     repo: string,
     commitSha: string,
   ): Promise<{ name: string; email: string; message: string }> {
-    const res = await this.request(
+    const out = await this.request(
       "GET",
       repoPath(owner, repo, `/git/commits/${encodeSegment(commitSha)}`),
     );
-    const body = (await res.json()) as {
+    const body = out.body as {
       author?: { name?: unknown; email?: unknown };
       message?: unknown;
     };
@@ -539,8 +550,8 @@ export class GitDataClient {
 
   /** `GET /repos/{owner}/{repo}` → 默认分支名（RunDescriptor.base_ref 缺失时兜底）。 */
   async getDefaultBranch(owner: string, repo: string): Promise<string> {
-    const res = await this.request("GET", repoPath(owner, repo, ""));
-    const body = (await res.json()) as { default_branch?: string };
+    const out = await this.request("GET", repoPath(owner, repo, ""));
+    const body = out.body as { default_branch?: string };
     if (typeof body.default_branch !== "string" || !body.default_branch) {
       throw new GithubApiError({
         status: 0,
@@ -557,11 +568,11 @@ export class GitDataClient {
     repo: string,
     ref: string,
   ): Promise<string> {
-    const res = await this.request(
+    const out = await this.request(
       "GET",
       repoPath(owner, repo, `/git/trees/${encodeSegment(ref)}`),
     );
-    return requireSha(await res.json(), "GET /git/trees");
+    return requireSha(out.body, "GET /git/trees");
   }
 
   async createCommit(
@@ -569,7 +580,7 @@ export class GitDataClient {
     repo: string,
     input: CommitInput,
   ): Promise<string> {
-    const res = await this.request(
+    const out = await this.request(
       "POST",
       repoPath(owner, repo, "/git/commits"),
       {
@@ -581,7 +592,7 @@ export class GitDataClient {
         },
       },
     );
-    return requireSha(await res.json(), "POST /git/commits");
+    return requireSha(out.body, "POST /git/commits");
   }
 
   /** `PATCH /git/refs/{ref}`；重建 imgbot 分支时 `force: true`（D5）。 */
@@ -593,12 +604,12 @@ export class GitDataClient {
     opts: { force?: boolean } = {},
   ): Promise<{ ref: string; sha: string }> {
     const full = normalizeRef(ref);
-    const res = await this.request(
+    const out = await this.request(
       "PATCH",
       repoPath(owner, repo, `/git/refs/${full}`),
       { body: { sha, force: opts.force === true } },
     );
-    const body = (await res.json()) as {
+    const body = out.body as {
       ref?: string;
       object?: { sha?: string };
     };
@@ -650,11 +661,11 @@ export class GitDataClient {
       head,
       per_page: "1",
     });
-    const res = await this.request(
+    const out = await this.request(
       "GET",
       `${repoPath(owner, repo, "/pulls")}?${query.toString()}`,
     );
-    const list = (await res.json()) as unknown;
+    const list = out.body as unknown;
     if (!Array.isArray(list) || list.length === 0) return null;
     const number = (list[0] as { number?: unknown })?.number;
     return typeof number === "number" ? { number } : null;
@@ -665,7 +676,7 @@ export class GitDataClient {
     repo: string,
     input: { title: string; body: string; head: string; base: string },
   ): Promise<{ number: number; htmlUrl: string | null }> {
-    const res = await this.request("POST", repoPath(owner, repo, "/pulls"), {
+    const out = await this.request("POST", repoPath(owner, repo, "/pulls"), {
       body: {
         title: input.title,
         body: input.body,
@@ -674,7 +685,7 @@ export class GitDataClient {
         base: input.base.replace(/^(?:refs\/heads\/|heads\/)/, ""),
       },
     });
-    const body = (await res.json()) as {
+    const body = out.body as {
       number?: unknown;
       html_url?: unknown;
     };

@@ -12,11 +12,13 @@ CREATE TABLE repos (
   installation_id     INTEGER NOT NULL,
   name                TEXT NOT NULL,     -- owner/repo
   default_branch      TEXT,
-  default_branch_override TEXT,          -- 原版 settings.DefaultBranchOverride
   enabled             INTEGER NOT NULL DEFAULT 1,
   last_run_at         TEXT,
   PRIMARY KEY (installation_id, name)
 );
+-- `repos.default_branch_override` 已废弃（分支覆盖以 `settings` 表为准，
+-- 见 dashboard/api.ts 的 SETTING_DEFAULT_BRANCH）：既有库升级执行一次
+--   ALTER TABLE repos DROP COLUMN default_branch_override;
 
 CREATE TABLE runs (
   run_id          TEXT PRIMARY KEY,      -- = Workflow instance id

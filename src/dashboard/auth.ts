@@ -27,8 +27,8 @@
  *   （格式 `v1:<iv-b64>:<ct-b64>`）；未配置 = 明文开发模式。
  */
 
-import type { FetchLike } from "../github/gitdata";
-import { GITHUB_API_BASE, GITHUB_API_VERSION } from "../github/gitdata";
+import type { FetchLike } from "../github/http";
+import { githubRequest } from "../github/http";
 import type { Env } from "../types";
 
 /** 会话 cookie 名（固定，前端与 api.ts 都按它取）。 */
@@ -47,8 +47,10 @@ export const TOKEN_REFRESH_WINDOW_MS = 5 * 60 * 1000;
 
 export const GITHUB_OAUTH_AUTHORIZE_URL =
   "https://github.com/login/oauth/authorize";
-export const GITHUB_OAUTH_TOKEN_URL =
-  "https://github.com/login/oauth/access_token";
+/** OAuth 端点与 api.github.com 是两个 host：传输层用 `base` 区分。 */
+const GITHUB_OAUTH_BASE = "https://github.com";
+const GITHUB_OAUTH_TOKEN_PATH = "/login/oauth/access_token";
+export const GITHUB_OAUTH_TOKEN_URL = `${GITHUB_OAUTH_BASE}${GITHUB_OAUTH_TOKEN_PATH}`;
 export const AUTH_CALLBACK_PATH = "/api/auth/callback";
 export const AUTH_PREFIX = "/api/auth";
 
@@ -459,26 +461,27 @@ export interface ExchangedToken {
 }
 
 async function exchangeCode(args: ExchangeArgs): Promise<ExchangedToken> {
-  // ⚠️ workerd 陷阱（同 gitdata.ts）：必须裸调用——`args.fetchImpl(...)` 是成员调用，
-  // 原生 fetch 的 WebIDL `this` 检查会抛 Illegal invocation（测试 mock 是普通
-  // 函数所以测不出来；2026-11-17 真仓 OAuth 实测踩坑）。
+  // 裸调用由传输层保证（绝不 `args.fetchImpl(...)` 成员调用——2026-11-17 真仓
+  // OAuth 实测：workerd 原生 fetch 的 WebIDL `this` 检查会抛 Illegal invocation）。
   const fetchImpl = args.fetchImpl;
-  const res = await fetchImpl(GITHUB_OAUTH_TOKEN_URL, {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json",
-      "user-agent": "image-bot-cf",
+  const res = await githubRequest({
+    path: GITHUB_OAUTH_TOKEN_PATH,
+    base: GITHUB_OAUTH_BASE,
+    accept: "application/json",
+    fetchImpl,
+    init: {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_id: args.clientId,
+        client_secret: args.clientSecret,
+        code: args.code,
+        redirect_uri: args.redirectUri,
+      }),
     },
-    body: JSON.stringify({
-      client_id: args.clientId,
-      client_secret: args.clientSecret,
-      code: args.code,
-      redirect_uri: args.redirectUri,
-    }),
   });
 
-  const raw = await res.text();
+  const raw = res.text ?? "";
   let body: Record<string, unknown> = {};
   if (raw) {
     try {
@@ -533,25 +536,27 @@ async function refreshAccessToken(args: {
   refreshToken: string;
   now: number;
 }): Promise<ExchangedToken | null> {
-  // 同上：裸调用，绝不 `args.fetchImpl(...)`。
+  // 同上：裸调用由传输层保证，绝不 `args.fetchImpl(...)`。
   const fetchImpl = args.fetchImpl;
 
   for (let attempt = 0; attempt < REFRESH_MAX_ATTEMPTS; attempt += 1) {
-    let res: Response;
+    let res: Awaited<ReturnType<typeof githubRequest>>;
     try {
-      res = await fetchImpl(GITHUB_OAUTH_TOKEN_URL, {
-        method: "POST",
-        headers: {
-          accept: "application/json",
-          "content-type": "application/json",
-          "user-agent": "image-bot-cf",
+      res = await githubRequest({
+        path: GITHUB_OAUTH_TOKEN_PATH,
+        base: GITHUB_OAUTH_BASE,
+        accept: "application/json",
+        fetchImpl,
+        init: {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            client_id: args.clientId,
+            client_secret: args.clientSecret,
+            grant_type: "refresh_token",
+            refresh_token: args.refreshToken,
+          }),
         },
-        body: JSON.stringify({
-          client_id: args.clientId,
-          client_secret: args.clientSecret,
-          grant_type: "refresh_token",
-          refresh_token: args.refreshToken,
-        }),
       });
     } catch (error) {
       console.error(
@@ -561,7 +566,7 @@ async function refreshAccessToken(args: {
       continue;
     }
 
-    const raw = await res.text();
+    const raw = res.text ?? "";
     if (!res.ok) {
       // 400/401 = refresh token 失效/被撤销；5xx 也不值得重试（换下次请求再说
       // 也没意义——会话已经没有可用 token）。
@@ -623,20 +628,13 @@ async function fetchUserProfile(
   fetchImpl: FetchLike,
   token: string,
 ): Promise<{ login: string; userId: number | null }> {
-  const res = await fetchImpl(`${GITHUB_API_BASE}/user`, {
-    headers: {
-      authorization: `Bearer ${token}`,
-      accept: "application/vnd.github+json",
-      "x-github-api-version": GITHUB_API_VERSION,
-      "user-agent": "image-bot-cf",
-    },
-  });
+  const res = await githubRequest({ token, path: "/user", fetchImpl });
 
   if (!res.ok) {
     throw new Error(`HTTP ${res.status}`);
   }
 
-  const body = (await res.json()) as { login?: unknown; id?: unknown };
+  const body = (res.body ?? {}) as { login?: unknown; id?: unknown };
   if (typeof body.login !== "string" || !body.login) {
     throw new Error("response is missing `login`");
   }

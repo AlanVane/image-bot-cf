@@ -11,9 +11,14 @@
 import { generateAppJwt, getInstallationToken } from "../github/auth";
 import {
   GITHUB_API_BASE,
-  GITHUB_API_VERSION,
-  toGithubApiError,
-} from "../github/gitdata";
+  MAX_PAGES,
+  PER_PAGE,
+  REQUEST_TIMEOUT_MS,
+  githubRequest,
+  nextLink,
+  type GithubHttpResult,
+} from "../github/http";
+import { toGithubApiError } from "../github/gitdata";
 import { parseImgbotConfig } from "../config/imgbotconfig";
 import type { Env } from "../types";
 import {
@@ -35,39 +40,11 @@ import {
 export const CRON_PR_POISON = "*/30 * * * *";
 export const CRON_SCHEDULE = "0 3 * * *";
 
-/** 分页上限：100 条/页 × 10 页，足够覆盖 P2 规模且防止死循环。 */
-const MAX_PAGES = 10;
-const PER_PAGE = "100";
-const REQUEST_TIMEOUT_MS = 20_000;
-
 const CONFIG_PATH = ".imgbotconfig";
 
 /* -------------------------------------------------------------------------- */
 /* HTTP helpers                                                                */
 /* -------------------------------------------------------------------------- */
-
-type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
-
-function fetchImpl(): FetchLike {
-  const impl = globalThis.fetch;
-  if (typeof impl !== "function") {
-    throw new Error("cron sweep requires a fetch implementation");
-  }
-  // 裸调用：workerd 下以成员调用原生 fetch 会触发 Illegal invocation。
-  return (input, init) => impl(input, init);
-}
-
-function githubHeaders(
-  token: string,
-  accept = "application/vnd.github+json",
-): Record<string, string> {
-  return {
-    authorization: `Bearer ${token}`,
-    accept,
-    "x-github-api-version": GITHUB_API_VERSION,
-    "user-agent": "image-bot-cf",
-  };
-}
 
 /** GET/POST 统一入口；非 2xx 抛 `GithubApiError`（404 由 `requestOrNull` 吞掉）。 */
 async function request(
@@ -75,28 +52,23 @@ async function request(
   pathOrUrl: string,
   init: RequestInit = {},
   accept?: string,
-): Promise<Response> {
-  const url = pathOrUrl.startsWith("http")
-    ? pathOrUrl
-    : `${GITHUB_API_BASE}${pathOrUrl}`;
-  const method = init.method ?? "GET";
-
-  let res: Response;
-  try {
-    res = await fetchImpl()(url, {
-      ...init,
-      headers: { ...githubHeaders(token, accept), ...(init.headers ?? {}) },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-  } catch (err) {
-    throw new Error(
-      `GitHub ${method} ${pathOrUrl} network error: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
+): Promise<GithubHttpResult> {
+  const result = await githubRequest({
+    token,
+    path: pathOrUrl,
+    init,
+    accept,
+    timeoutMs: REQUEST_TIMEOUT_MS,
+  });
+  if (!result.ok) {
+    throw await toGithubApiError(
+      result.response,
+      init.method ?? "GET",
+      pathOrUrl,
+      result.text ?? undefined,
     );
   }
-  if (!res.ok) throw await toGithubApiError(res, method, pathOrUrl);
-  return res;
+  return result;
 }
 
 /** 404 → null（分支/文件不存在是正常状态，不是错误）。 */
@@ -104,24 +76,13 @@ async function requestOrNull(
   token: string,
   pathOrUrl: string,
   accept?: string,
-): Promise<Response | null> {
+): Promise<GithubHttpResult | null> {
   try {
     return await request(token, pathOrUrl, {}, accept);
   } catch (err) {
     if ((err as { status?: unknown }).status === 404) return null;
     throw err;
   }
-}
-
-/** RFC 5988 `Link: <…>; rel="next"` → next URL。 */
-function nextLink(header: string | null): string | null {
-  if (!header) return null;
-  for (const part of header.split(",")) {
-    if (!/rel="?next"?/.test(part)) continue;
-    const match = /<([^>]+)>/.exec(part);
-    if (match?.[1]) return match[1];
-  }
-  return null;
 }
 
 function encodeSegment(value: string): string {
@@ -153,8 +114,8 @@ async function listInstallationIds(env: Env): Promise<number[]> {
 
   for (let page = 0; url && page < MAX_PAGES; page += 1) {
     const res = await request(jwt, url);
-    ids.push(...parseInstallationIds(await res.json()));
-    url = nextLink(res.headers.get("link"));
+    ids.push(...parseInstallationIds(res.body));
+    url = nextLink(res.link);
   }
   if (url) {
     console.warn(
@@ -187,8 +148,8 @@ async function listInstallationRepos(
 
   for (let page = 0; url && page < MAX_PAGES; page += 1) {
     const res = await request(token, url);
-    repos.push(...parseInstallationRepos(await res.json()));
-    url = nextLink(res.headers.get("link"));
+    repos.push(...parseInstallationRepos(res.body));
+    url = nextLink(res.link);
   }
   if (url) {
     // 分页见底还有 next：明确记录被截断的 installation，别静默少扫。
@@ -209,7 +170,7 @@ async function resolveDefaultBranch(
   if (known) return known;
   const res = await requestOrNull(token, repoPath(owner, repo));
   if (!res) return null;
-  const body = (await res.json()) as { default_branch?: unknown };
+  const body = res.body as { default_branch?: unknown };
   return typeof body.default_branch === "string" && body.default_branch
     ? body.default_branch
     : null;
@@ -231,7 +192,7 @@ async function fetchRootFileText(
   );
   if (!treeRes) return null;
 
-  const body = (await treeRes.json()) as {
+  const body = treeRes.body as {
     tree?: Array<{ path?: unknown; type?: unknown; sha?: unknown }>;
   };
   const entry = (body.tree ?? []).find(
@@ -246,7 +207,7 @@ async function fetchRootFileText(
     "application/vnd.github.raw",
   );
   if (!blobRes) return null;
-  return new TextDecoder().decode(await blobRes.arrayBuffer());
+  return blobRes.text ?? "";
 }
 
 /* -------------------------------------------------------------------------- */
@@ -471,7 +432,7 @@ async function listPulls(
     token,
     `${repoPath(owner, repo, "/pulls")}?${query.toString()}`,
   );
-  const body = (await res.json()) as unknown;
+  const body = res.body as unknown;
   if (!Array.isArray(body)) return [];
 
   const pulls: PullSummary[] = [];
@@ -507,7 +468,7 @@ async function fetchTipCommit(
   );
   if (!res) return null;
 
-  const body = (await res.json()) as {
+  const body = res.body as {
     commit?: {
       message?: unknown;
       author?: { name?: unknown; email?: unknown; date?: unknown };
@@ -612,7 +573,7 @@ async function recoverRepoPr(
       base: baseRef,
     }),
   });
-  const created = (await res.json()) as { number?: unknown };
+  const created = res.body as { number?: unknown };
   console.log(
     `pr poison sweep: recreated PR #${String(created.number)} for ${entry.repo}`,
   );
