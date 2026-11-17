@@ -67,13 +67,14 @@
               </div>
               <p>
                 Install the GitHub App, push images to your default branch, and
-                ImageBot opens a pull request with the lighter versions. Repeated
-                runs update that same pull request in place — you never see
-                duplicate PRs. Merge it (merge or squash) and ImageBot deletes its
-                branch; if someone pushes to the <code>imgbot</code> branch by
-                hand, ImageBot aborts the run politely and leaves the branch
-                alone. Only strictly smaller files replace the originals, and
-                every result is decode-validated first.
+                ImageBot opens a pull request with the lighter versions.
+                Repeated runs update that same pull request in place — you never
+                see duplicate PRs. Merge it (merge or squash) and ImageBot
+                deletes its branch; if someone pushes to the
+                <code>imgbot</code> branch by hand, ImageBot aborts the run
+                politely and leaves the branch alone. Only strictly smaller
+                files replace the originals, and every result is
+                decode-validated first.
               </p>
             </section>
 
@@ -240,8 +241,8 @@
               <div class="branch-note">
                 <span class="branch-note-label">Default branch override</span>
                 <p>
-                  If you want ImageBot to look after a different branch instead of
-                  the default for the repo.
+                  If you want ImageBot to look after a different branch instead
+                  of the default for the repo.
                 </p>
               </div>
               <ul class="dashboard-features">
@@ -255,6 +256,14 @@
                 </li>
                 <li>
                   <span aria-hidden="true">↗</span><span>Run history</span>
+                </li>
+                <li>
+                  <span aria-hidden="true">↗</span
+                  ><span
+                    >Private-repo enable limit — operators can cap how many
+                    private repositories run at once; you will see a notice if
+                    the limit is reached</span
+                  >
                 </li>
               </ul>
             </section>
@@ -300,9 +309,9 @@
                 </li>
               </ul>
               <p>
-                Commits land as the ImageBot bot with a verified signature (green
-                Verified badge). If the required permissions ever change, GitHub
-                will ask you to accept them first.
+                Commits land as the ImageBot bot with a verified signature
+                (green Verified badge). If the required permissions ever change,
+                GitHub will ask you to accept them first.
               </p>
               <p>
                 You can uninstall the GitHub App at any time to revoke all

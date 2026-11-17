@@ -57,6 +57,8 @@ export type RunState =
   | "skipped_threshold"
   | "skipped_nochange"
   | "skipped_guard"
+  /** 仪表盘里该仓库被停用（`repos.enabled = 0`）：本轮直接收尾，不扫描。 */
+  | "skipped_disabled"
   | "aborted_by_human"
   | "failed";
 
@@ -158,6 +160,8 @@ export interface Env {
   PUBLIC_BASE_URL?: string;
   /** D10 配额：每 installation 每 UTC 日 run 上限；0/缺省 = 不限（字符串 vars）。 */
   QUOTA_DAILY_RUNS?: string;
+  /** D10 配额：每 installation 可同时启用的私有仓库数上限；0/缺省 = 不限（字符串 vars）。 */
+  QUOTA_PRIVATE_REPOS?: string;
   /**
    * 会话 token 静态加密密钥：base64(32 random bytes)，经 `wrangler secret` 设置。
    * 缺省 = 明文开发模式；配置后 `sessions.user_token` / `refresh_token` 以

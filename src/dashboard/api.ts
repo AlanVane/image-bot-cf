@@ -29,6 +29,7 @@ import {
 } from "../github/http";
 import type { Env, RunDescriptor } from "../types";
 import { generateAppJwt } from "../github/auth";
+import { privateRepoLimit } from "../quota";
 import {
   clearSession,
   requireUser,
@@ -444,6 +445,8 @@ interface RepoAccess {
   installationId: number;
   /** GitHub 规范名（响应体 full_name）——URL 段大小写不可信，锁键/D1 一律用它（P1）。 */
   fullName: string;
+  /** 仓库是否私有（私有仓库启用受 `QUOTA_PRIVATE_REPOS` 限制，§10）。 */
+  isPrivate: boolean;
 }
 
 async function resolveRepoAccess(
@@ -492,7 +495,9 @@ async function resolveRepoAccess(
     typeof bodyFullName === "string" && bodyFullName.includes("/")
       ? bodyFullName
       : `${owner}/${name}`;
-  return { installationId, fullName: canonicalName };
+  const isPrivate =
+    (repoRes.body as Record<string, unknown> | null)?.private === true;
+  return { installationId, fullName: canonicalName, isPrivate };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -722,6 +727,39 @@ function parseSettingsPatch(raw: unknown): SettingsPatch | null {
   return patch;
 }
 
+/**
+ * 该 installation 当前已启用的**私有**仓库数（不含目标仓库自身）。
+ *
+ * 口径：GitHub 仓库列表里 `private === true` ∩ D1 `repos.enabled != 0`
+ * （缺行 = 启用，与 `loadRepoAggregates` 同语义）；目标仓库被排除——它本轮即将
+ * 被启用，不能把自己算作已占用的名额（也让重复启用是幂等放行）。
+ */
+async function countEnabledPrivateRepos(
+  env: Env,
+  user: SessionUser,
+  installationId: number,
+  targetFullName: string,
+  deps: ApiDeps,
+): Promise<number> {
+  const repos = await listInstallationRepos(user, installationId, deps);
+  const rows = await env.DB.prepare(
+    "SELECT name, enabled FROM repos WHERE installation_id = ?",
+  )
+    .bind(installationId)
+    .all<{ name: string; enabled: number | null }>();
+  const disabled = new Set(
+    (rows.results ?? [])
+      .filter((row) => row.enabled === 0)
+      .map((row) => row.name),
+  );
+  return repos.filter(
+    (repo) =>
+      repo.isPrivate &&
+      repo.fullName !== targetFullName &&
+      !disabled.has(repo.fullName),
+  ).length;
+}
+
 async function updateSettings(
   env: Env,
   user: SessionUser,
@@ -748,6 +786,22 @@ async function updateSettings(
   // URL 段大小写可能与 GitHub 规范名不一致 → 后续锁键/D1/描述符一律用规范名（P1）。
   fullName = access.fullName;
   const installationId = access.installationId;
+
+  // 私有仓库启用配额（`QUOTA_PRIVATE_REPOS`，0/缺省 = 不限）：只在"启用私有仓库"
+  // 时计数；超额返回 429 且**不写库**（先判后写）。
+  const privateLimit = privateRepoLimit(env);
+  if (patch.enabled === true && privateLimit > 0 && access.isPrivate) {
+    const enabledPrivate = await countEnabledPrivateRepos(
+      env,
+      user,
+      installationId,
+      fullName,
+      deps,
+    );
+    if (enabledPrivate >= privateLimit) {
+      return jsonResponse({ error: "private_quota_exceeded" }, 429);
+    }
+  }
 
   if (patch.enabled !== undefined) {
     await env.DB.prepare(

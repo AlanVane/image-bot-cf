@@ -4,7 +4,11 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { dailyRunLimit, quotaAllowsNewRun } from "../src/quota";
+import {
+  dailyRunLimit,
+  privateRepoLimit,
+  quotaAllowsNewRun,
+} from "../src/quota";
 import type { Env } from "../src/types";
 
 function fakeEnv(
@@ -44,6 +48,28 @@ describe("dailyRunLimit 解析", () => {
   it("正数取整（字符串 vars）", () => {
     expect(dailyRunLimit({ QUOTA_DAILY_RUNS: "25" } as Env)).toBe(25);
     expect(dailyRunLimit({ QUOTA_DAILY_RUNS: " 7.9 " } as Env)).toBe(7);
+  });
+});
+
+describe("privateRepoLimit 解析（与 dailyRunLimit 共用解析约定）", () => {
+  it("0 / 缺省 / 非法 / 负数 → 0（不限）", () => {
+    expect(privateRepoLimit({} as Env)).toBe(0);
+    expect(privateRepoLimit({ QUOTA_PRIVATE_REPOS: "" } as Env)).toBe(0);
+    expect(privateRepoLimit({ QUOTA_PRIVATE_REPOS: "0" } as Env)).toBe(0);
+    expect(privateRepoLimit({ QUOTA_PRIVATE_REPOS: "abc" } as Env)).toBe(0);
+    expect(privateRepoLimit({ QUOTA_PRIVATE_REPOS: "-2" } as Env)).toBe(0);
+  });
+
+  it("正数取整（字符串 vars），与 QUOTA_DAILY_RUNS 互不影响", () => {
+    expect(privateRepoLimit({ QUOTA_PRIVATE_REPOS: "3" } as Env)).toBe(3);
+    expect(privateRepoLimit({ QUOTA_PRIVATE_REPOS: " 2.9 " } as Env)).toBe(2);
+    expect(
+      privateRepoLimit({
+        QUOTA_DAILY_RUNS: "50",
+        QUOTA_PRIVATE_REPOS: "4",
+      } as Env),
+    ).toBe(4);
+    expect(privateRepoLimit({ QUOTA_DAILY_RUNS: "50" } as Env)).toBe(0);
   });
 });
 

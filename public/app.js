@@ -90,6 +90,8 @@ async function api(path, options = {}) {
         "That change could not be saved. Check the value and try again.",
       quota_exceeded:
         "This installation has reached its daily optimization quota. Try again tomorrow.",
+      private_quota_exceeded:
+        "You reached the limit of private repositories. Disable another private repository to enable this one.",
       github_error: "GitHub could not be reached. Please try again.",
       internal_error: "The service had a problem. Please try again.",
     };
