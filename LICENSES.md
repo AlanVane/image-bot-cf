@@ -8,22 +8,22 @@
 
 ## 1. 当前 bundle 内组件（P1）
 
-| 组件                                     | 版本    | Bundle 形态                             | 许可证                                                                                                           | 风险结论                                              |
-| ---------------------------------------- | ------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| `@jsquash/jpeg`（JS wrapper）            | 1.6.0   | JS（ESM）                               | Apache-2.0（© 2023 jamsinclair）                                                                                 | 低：需随分发附带 LICENSE / NOTICE，保留版权与专利条款 |
-| `@jsquash/jpeg` codec（MozJPEG wasm）    | 1.6.0   | `mozjpeg_dec.wasm` / `mozjpeg_enc.wasm` | IJG License + Modified BSD-3-Clause + Zlib（libjpeg-turbo 谱系；见包内 `codec/LICENSE.codec.md`）                | 低：BSD 系。文档中须含 IJG 致谢（见 §4 第 2 条）      |
-| `@jsquash/png`（JS wrapper）             | 3.1.1   | JS（ESM）                               | Apache-2.0                                                                                                       | 低                                                    |
-| `@jsquash/png` codec（Squoosh PNG）      | 3.1.1   | `squoosh_png_bg.wasm`                   | Apache-2.0（Squoosh v1.12.0；包内 `codec/LICENSE.codec.md` 为 Google BSD-3 文本；内含 libpng，libpng/zlib 许可） | 低：BSD/Apache 系                                     |
-| `@jsquash/oxipng`（JS wrapper）          | 2.3.0   | JS（ESM）                               | Apache-2.0（© 2023 jamsinclair；Squoosh 血统）                                                                   | 低                                                    |
-| `@jsquash/oxipng` codec（oxipng wasm）   | 2.3.0   | `squoosh_oxipng_bg.wasm`（ST 164KB）    | MIT（oxipng，© Joshua Holmer et al.；包内 `codec/LICENSE.codec.md`）                                             | 低：MIT                                               |
-| vendored jpegtran wasm（IJG libjpeg 10） | v10     | `src/optimize/vendor/jpegtran_opt.wasm`（147KB） | IJG License（`tools/jpegtran-wasm/` 自建；README LEGAL 全文已收 THIRD_PARTY_NOTICES.md）               | 低：IJG 条款已履行（文档致谢 + 许可文本随分发） |
-| `svgo`                                   | 4.1.0   | JS（ESM）                               | MIT（© Kir Belevich）                                                                                            | 低                                                    |
-| `svgo` 传递依赖（bundle 内实际引入部分） | —       | JS                                      | MIT / BSD-2-Clause / BSD-3-Clause / ISC / CC0-1.0 / BlueOak-1.0.0                                                | 低：全部宽松许可；见 §4 第 1 条的自动清单             |
-| Cloudflare `workerd` / Workers 运行时    | —       | 宿主平台（不随仓库分发）                | Cloudflare 服务条款                                                                                              | 不适用（非分发代码）                                  |
-| `gifenc`                                 | 1.0.3   | JS（ESM）                               | MIT（© 2017 Matt DesLauriers）                                                                                   | 低                                                    |
-| `omggif`                                 | 1.0.10  | JS（CJS）                               | MIT（无 LICENSE 文件，依 package 元数据；标准文本已收进 THIRD_PARTY_NOTICES.md）                                 | 低                                                    |
-| `isomorphic-git`（wiki 模式）            | 1.44.15 | JS（ESM）                               | MIT（© 2017-2023 isomorphic-git authors）                                                                        | 低                                                    |
-| `@cloudflare/containers`                 | 0.3.7   | JS（ESM）                               | MIT OR Apache-2.0（选 MIT）                                                                                      | 低                                                    |
+| 组件                                     | 版本    | Bundle 形态                                      | 许可证                                                                                                           | 风险结论                                              |
+| ---------------------------------------- | ------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `@jsquash/jpeg`（JS wrapper）            | 1.6.0   | JS（ESM）                                        | Apache-2.0（© 2023 jamsinclair）                                                                                 | 低：需随分发附带 LICENSE / NOTICE，保留版权与专利条款 |
+| `@jsquash/jpeg` codec（MozJPEG wasm）    | 1.6.0   | `mozjpeg_dec.wasm` / `mozjpeg_enc.wasm`          | IJG License + Modified BSD-3-Clause + Zlib（libjpeg-turbo 谱系；见包内 `codec/LICENSE.codec.md`）                | 低：BSD 系。文档中须含 IJG 致谢（见 §4 第 2 条）      |
+| `@jsquash/png`（JS wrapper）             | 3.1.1   | JS（ESM）                                        | Apache-2.0                                                                                                       | 低                                                    |
+| `@jsquash/png` codec（Squoosh PNG）      | 3.1.1   | `squoosh_png_bg.wasm`                            | Apache-2.0（Squoosh v1.12.0；包内 `codec/LICENSE.codec.md` 为 Google BSD-3 文本；内含 libpng，libpng/zlib 许可） | 低：BSD/Apache 系                                     |
+| `@jsquash/oxipng`（JS wrapper）          | 2.3.0   | JS（ESM）                                        | Apache-2.0（© 2023 jamsinclair；Squoosh 血统）                                                                   | 低                                                    |
+| `@jsquash/oxipng` codec（oxipng wasm）   | 2.3.0   | `squoosh_oxipng_bg.wasm`（ST 164KB）             | MIT（oxipng，© Joshua Holmer et al.；包内 `codec/LICENSE.codec.md`）                                             | 低：MIT                                               |
+| vendored jpegtran wasm（IJG libjpeg 10） | v10     | `src/optimize/vendor/jpegtran_opt.wasm`（147KB） | IJG License（`tools/jpegtran-wasm/` 自建；README LEGAL 全文已收 THIRD_PARTY_NOTICES.md）                         | 低：IJG 条款已履行（文档致谢 + 许可文本随分发）       |
+| `svgo`                                   | 4.1.0   | JS（ESM）                                        | MIT（© Kir Belevich）                                                                                            | 低                                                    |
+| `svgo` 传递依赖（bundle 内实际引入部分） | —       | JS                                               | MIT / BSD-2-Clause / BSD-3-Clause / ISC / CC0-1.0 / BlueOak-1.0.0                                                | 低：全部宽松许可；见 §4 第 1 条的自动清单             |
+| Cloudflare `workerd` / Workers 运行时    | —       | 宿主平台（不随仓库分发）                         | Cloudflare 服务条款                                                                                              | 不适用（非分发代码）                                  |
+| `gifenc`                                 | 1.0.3   | JS（ESM）                                        | MIT（© 2017 Matt DesLauriers）                                                                                   | 低                                                    |
+| `omggif`                                 | 1.0.10  | JS（CJS）                                        | MIT（无 LICENSE 文件，依 package 元数据；标准文本已收进 THIRD_PARTY_NOTICES.md）                                 | 低                                                    |
+| `isomorphic-git`（wiki 模式）            | 1.44.15 | JS（ESM）                                        | MIT（© 2017-2023 isomorphic-git authors）                                                                        | 低                                                    |
+| `@cloudflare/containers`                 | 0.3.7   | JS（ESM）                                        | MIT OR Apache-2.0（选 MIT）                                                                                      | 低                                                    |
 
 传递依赖明细（`svgo` 4.1.0 依赖树，均为宽松许可）：`commander` MIT、`css-select` BSD-2-Clause、
 `css-tree` MIT、`csso` MIT、`css-what` BSD-2-Clause、`domhandler` / `domutils` /
@@ -39,7 +39,7 @@
 
 | 组件                                       | 版本   | 许可证                                                                                                       | 结论                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | ------------------------------------------ | ------ | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `wasm-image-optimization`（Satoru / Skia） | 2.0.13 | MIT（© 2026 SoraKumo）；内含 Skia BSD-3、libavif + AOM BSD-2/BSD-3、dav1d BSD-2、Wuffs Apache-2.0、expat MIT | **未引入**。它确有 workerd 入口（`import wasm from '.../*.wasm'` 构建期模块 + `WebAssembly.instantiate(Module)`），但 `quality` 只作用于 WebP/JPEG/AVIF；PNG 是 Skia 的无损 zlib 编码。实测 `tests/fixtures/shot.png` 在 quality = 1/30/80/100 下输出字节完全相同（均 29,598B），**无法实现有损 PNG**，故不引入（也避免 +6.9MB wasm）。若未来用于无损 PNG（其 29,598B 明显优于 `@jsquash/png` 的 86,913B），许可无阻碍，需重跑本表。 |
+| `wasm-image-optimization`（Satoru / Skia） | 2.0.13 | MIT（© 2026 SoraKumo）；内含 Skia BSD-3、libavif + AOM BSD-2/BSD-3、dav1d BSD-2、Wuffs Apache-2.0、expat MIT | **未引入**。它确有 workerd 入口（`import wasm from '.../*.wasm'` 构建期模块 + `WebAssembly.instantiate(Module)`），但 `quality` 只作用于 WebP/JPEG/AVIF；PNG 是 Skia 的无损 zlib 编码。实测（旧夹具时代，2026-11-17 前）`tests/fixtures/shot.png` 在 quality = 1/30/80/100 下输出字节完全相同（均 29,598B），**无法实现有损 PNG**，故不引入（也避免 +6.9MB wasm）。若未来用于无损 PNG（其 29,598B 明显优于 `@jsquash/png` 的 86,913B），许可无阻碍，需重跑本表。 |
 | `pngquant` / `libimagequant`               | —      | **GPL-3**                                                                                                    | **不采用**（见 §3）。有损 PNG 的续作路径见 `src/optimize/png.ts` 头注释。                                                                                                                                                                                                                                                                                                                                                            |
 
 ## 3. 计划中组件与 GPL 传染性分析（§9-R7）
@@ -98,9 +98,10 @@
 - [x] **GIF 决策记录**（2026-11-17）：§3.1 定案 1+2 组合；gifsicle 不进 bundle。
 - [x] **有损 PNG 决策记录**（2026-11-17）：§3.2 定案不引入 GPL-3 量化器，走 gifenc
       quantize（MIT）；基准见 `bench/RESULTS.md`。
-- [ ] **测试夹具来源核查**：`tests/fixtures/photo.jpg`、`shot.png` 需确认可再分发
-      （自摄/CC0/明确授权），否则替换；`bench/corpus/` 为脚本生成（sharp/gifenc），
-      已天然可再分发。
+- [x] **测试夹具来源核查**（2026-11-17 定案）：原 photo.jpg/shot.png 来源不明 →
+      已**全部替换为脚本生成素材**（`scripts/gen-fixtures.mjs`，确定性、天然可再分发；
+      生成夹具带 2000×1500 尺寸/JFIF APP0/tEXt+eXIf 等测试契约属性）；`bench/corpus/`
+      同为脚本生成。
 - [x] **项目自身许可证**（2026-11-17）：`LICENSE` = MIT（与原版 Imgbot 同许可）；
       `package.json` 带 `license: "MIT"`（`private: true` 仅防误发 npm，不影响开源）。
 - [ ] **部署产物审计**：每次 `wrangler deploy` 前跑一遍 allowlist 扫描；Workers 的

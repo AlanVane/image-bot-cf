@@ -315,7 +315,7 @@ queued → scanning → optimizing → committing → pr_open
 
 契约不变式（与原版一致）：**只有严格变小的文件才替换**；优化后所有非 SVG 图**解码验证**一次（原版用 ImageMagick reset 校验防损坏），校验失败即丢弃该文件结果。
 
-实测记录（bench 夹具）：`shot.png` chunk 剥离 60,121→59,971B，而 `@jsquash/png` 重编码 86,913B（更大，被弃）——PNG 无损主力应为 **oxipng-wasm（提前到 P1.5）**，`@jsquash/png` 仅兜底；JPEG P1 段剥离不含 Huffman 重优化（`-optimize`），节省来自元数据；CMYK/YCCK 图需保留 APP14（见 `src/optimize/jpeg.ts` 注释）。
+实测记录（生成夹具 `shot.png` 52,810B——`scripts/gen-fixtures.mjs`，2026-11-17 起全部夹具为脚本生成）：chunk 剥离 52,810→50,892B，`@jsquash/png` 重编码 85,439B（更大，被弃），**oxipng 7,421B**（无损主力，§11-4/§11-7 已闭环）；JPEG 无损 = 段剥离 + Huffman 重优化（§11-2）双候选取小；CMYK/YCCK 图需保留 APP14（见 `src/optimize/jpeg.ts` 注释）。
 PNG 有损（b 路线，2026-11-17 落地）：gifenc `quantize`（MIT）调色板量化 → jsquash 编码（lodepng 自动落索引色）。实测：65k 色渐变 314,781→**41,502B（−86.8%）**；透明槽保留；低色图无收益（契约兜底）。c/d 路线（容器 sharp palette）已并存于 §6.3 通道。
 
 ### 6.2 打包与运行约束（硬性）
