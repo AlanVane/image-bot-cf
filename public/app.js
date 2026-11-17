@@ -48,6 +48,18 @@ function button(label, className, action, disabled = false) {
   return element;
 }
 
+/**
+ * 即时反馈（UX）：点击瞬间进入忙碌态，导航/请求在后台继续。
+ * 跨页跳转前的"无反应空窗"是体感卡顿的主因；光标要打在 documentElement 上
+ * ——导航会立刻掐死页面帧，按钮自身的 cursor 往往来不及上屏。
+ */
+function markBusy(element, label) {
+  element.classList.add("is-busy");
+  element.setAttribute("aria-busy", "true");
+  if (label) element.textContent = label;
+  document.documentElement.style.cursor = "progress";
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     credentials: "same-origin",
@@ -91,7 +103,39 @@ async function api(path, options = {}) {
   return data;
 }
 
+/**
+ * 隐藏的 QA/自动化预览入口（不进导航，纯 URL 钩子）：
+ *   ?preview=logged-out   登录页
+ *   ?preview=empty        空态（No installations found）
+ *   ?preview=error        错误态
+ * 正常访问完全不受影响；前端自动化用它覆盖边界分支。
+ */
+function applyPreview(preview) {
+  if (preview === "logged-out") {
+    state.phase = "loggedOut";
+    return true;
+  }
+  if (preview === "error") {
+    state.error = "";
+    state.phase = "error";
+    return true;
+  }
+  if (preview === "empty") {
+    state.user = { login: null, userId: null };
+    state.repos = [];
+    state.repoError = "";
+    state.phase = "ready";
+    return true;
+  }
+  return false;
+}
+
 async function loadWorkspace() {
+  const preview = new URLSearchParams(window.location.search).get("preview");
+  if (applyPreview(preview)) {
+    render();
+    return;
+  }
   state.phase = "loading";
   state.error = "";
   render();
@@ -246,6 +290,7 @@ function renderLogin() {
   docs.rel = "noopener noreferrer";
   const signIn = node("a", "button button-quiet", "Sign in");
   signIn.href = "/api/auth/login";
+  signIn.addEventListener("click", () => markBusy(signIn, "Opening…"));
   loginNav.append(docs, signIn);
   top.append(identity, loginNav);
   page.append(top);
@@ -253,7 +298,7 @@ function renderLogin() {
   const layout = node("section", "login-layout");
   const story = node("div", "login-story");
   story.append(
-    node("p", "eyebrow", "YOUR REPOSITORIES, IN BETTER SHAPE"),
+    node("p", "eyebrow", "Your repositories, in better shape"),
     node("h1", "", "Smaller images.\nHappier repositories."),
     node(
       "p",
@@ -270,10 +315,12 @@ function renderLogin() {
 
   const card = node("section", "login-card");
   card.setAttribute("aria-labelledby", "login-title");
-  card.append(node("span", "login-card-icon", "↗"));
-  card.append(node("p", "eyebrow", "GET STARTED"));
-  card.append(node("h2", "", "Connect with GitHub"));
-  card.lastChild.id = "login-title";
+  const titleRow = node("div", "login-card-title");
+  titleRow.append(node("span", "login-card-icon", "↗"));
+  const title = node("h2", "", "Connect with GitHub");
+  title.id = "login-title";
+  titleRow.append(title);
+  card.append(titleRow);
   card.append(
     node(
       "p",
@@ -281,8 +328,16 @@ function renderLogin() {
       "Sign in to see your installed repositories and manage image optimization.",
     ),
   );
+  card.append(
+    node(
+      "p",
+      "login-card-note",
+      "You’ll continue to GitHub to authorize the Imgbot app — no password is entered on this site.",
+    ),
+  );
   const login = node("a", "button button-primary login-button", "Sign in");
   login.href = "/api/auth/login";
+  login.addEventListener("click", () => markBusy(login, "Opening GitHub…"));
   login.append(node("span", "button-arrow", "↗"));
   card.append(login);
   card.append(
@@ -294,20 +349,123 @@ function renderLogin() {
   );
   layout.append(story, card);
   page.append(layout);
+  page.append(renderLoginMarketing());
   const footer = node("footer", "login-footer");
-  footer.append(
-    node("span", "", "IMAGEBOT"),
-    node("span", "", "A little less weight on every image."),
-  );
+  footer.append(node("span", "", "A little less weight on every image."));
   page.append(footer);
   app.append(page);
+}
+
+function renderLoginMarketing() {
+  const marketing = node("div", "login-marketing");
+
+  const how = node("section", "marketing-section how-section");
+  how.setAttribute("aria-labelledby", "how-title");
+  const howHeading = node("div", "marketing-heading");
+  howHeading.append(node("p", "eyebrow", "A simple rhythm"));
+  const howTitle = node("h2", "", "How it works");
+  howTitle.id = "how-title";
+  howHeading.append(howTitle);
+  const steps = node("ol", "steps-list");
+  [
+    [
+      "1. Install",
+      "Install Imgbot into your GitHub projects with the click of a button.",
+    ],
+    [
+      "2. Merge",
+      "Imgbot sends you a pull request with all of the images it can find optimized. Just merge it and you're done.",
+    ],
+    [
+      "3. Win",
+      "Imgbot watches for new images in your repository and opens more pull requests.",
+    ],
+  ].forEach(([title, copy]) => {
+    const step = node("li", "step-card");
+    step.append(node("h3", "", title));
+    step.append(node("p", "", copy));
+    steps.append(step);
+  });
+  how.append(howHeading, steps);
+  marketing.append(how);
+
+  const optimize = node("section", "marketing-section optimize-section");
+  optimize.setAttribute("aria-labelledby", "optimize-title");
+  const optimizeHeading = node("div", "marketing-heading");
+  optimizeHeading.append(node("p", "eyebrow", "A lighter web"));
+  const optimizeTitle = node("h2", "", "Why optimize your images?");
+  optimizeTitle.id = "optimize-title";
+  optimizeHeading.append(optimizeTitle);
+  const optimizeCopy = node("div", "optimize-copy");
+  optimizeCopy.append(
+    node(
+      "p",
+      "",
+      "When you're shipping code and hitting deadlines, it's easy to forget about optimizing your images. But the truth is, if you don't optimize your images, you are losing out.",
+    ),
+    node(
+      "p",
+      "",
+      "Web pages with optimized images load faster. Faster pages have higher conversion rates, lower bounce rates, and happier users. And of course, smaller images reduce bandwidth costs for you and your visitors.",
+    ),
+  );
+  optimize.append(optimizeHeading, optimizeCopy);
+  marketing.append(optimize);
+
+  const why = node("section", "marketing-section why-section");
+  why.setAttribute("aria-labelledby", "why-title");
+  const whyHeading = node("div", "marketing-heading");
+  whyHeading.append(node("p", "eyebrow", "Made for the long run"));
+  const whyTitle = node("h2", "", "Why use Imgbot?");
+  whyTitle.id = "why-title";
+  whyHeading.append(whyTitle);
+  const whyIntro = node(
+    "p",
+    "why-intro",
+    "Setting up and configuring your own tools can be a complicated and lengthy process. With just a few clicks, you can install Imgbot and permanently solve your image optimization problems.",
+  );
+  const benefits = node("ul", "benefit-list");
+  [
+    "Lossless optimization by default.",
+    "Originals are replaced only when the optimized file is strictly smaller.",
+    "Every result is decode-validated before it can replace a file.",
+    "Use .imgbotconfig to choose ignored files, a schedule, and pull request title and body.",
+    "Changes arrive as pull requests, so you stay in control.",
+  ].forEach((copy) => {
+    const item = node("li", "");
+    item.append(node("span", "benefit-mark", "↗"));
+    item.append(node("span", "", copy));
+    benefits.append(item);
+  });
+  why.append(whyHeading, whyIntro, benefits);
+  marketing.append(why);
+
+  const closing = node("section", "login-closing");
+  closing.setAttribute("aria-labelledby", "closing-title");
+  const closingInner = node("div", "closing-inner");
+  const closingTitle = node(
+    "h2",
+    "",
+    "Optimize your images from now until forever.",
+  );
+  closingTitle.id = "closing-title";
+  const signIn = node("a", "button button-primary closing-sign-in", "Sign in");
+  signIn.href = "/api/auth/login";
+  signIn.addEventListener("click", () => markBusy(signIn, "Opening GitHub…"));
+  signIn.append(node("span", "button-arrow", "↗"));
+  signIn.lastChild.setAttribute("aria-hidden", "true");
+  closingInner.append(closingTitle, signIn);
+  closing.append(closingInner);
+  marketing.append(closing);
+
+  return marketing;
 }
 
 function renderError() {
   const page = node("main", "center-state");
   const panel = node("section", "state-panel");
   panel.append(node("span", "state-symbol error-symbol", "!"));
-  panel.append(node("p", "eyebrow", "WE COULDN’T LOAD YOUR WORKSPACE"));
+  panel.append(node("p", "eyebrow", "We couldn’t load your workspace"));
   panel.append(node("h1", "", "That didn’t go to plan."));
   panel.append(
     node("p", "state-copy", state.error || "Please try again in a moment."),
@@ -360,7 +518,7 @@ function renderDashboard() {
 
   const intro = node("section", "dashboard-intro");
   const introCopy = node("div", "intro-copy");
-  introCopy.append(node("p", "eyebrow", "YOUR IMAGE WORKSPACE"));
+  introCopy.append(node("p", "eyebrow", "Your image workspace"));
   const title = node("h1", "");
   title.append(
     node("span", "", "Imgbot"),
@@ -408,10 +566,7 @@ function renderDashboard() {
   }
   shell.append(main);
   const footer = node("footer", "app-footer");
-  footer.append(
-    node("span", "", "IMAGEBOT"),
-    node("span", "", "Thoughtful image optimization for GitHub."),
-  );
+  footer.append(node("span", "", "Thoughtful image optimization for GitHub."));
   shell.append(footer);
   if (state.modalRepo) {
     const repo = state.repos.find((item) => item.fullName === state.modalRepo);
@@ -441,7 +596,7 @@ function installations() {
 function renderInstallationFilters() {
   const section = node("nav", "installation-filters");
   section.setAttribute("aria-label", "Filter repositories by installation");
-  const label = node("span", "filter-label", "INSTALLATIONS");
+  const label = node("span", "filter-label", "Installations");
   const chips = node("div", "filter-chips");
   const all = button(
     "All",
@@ -524,7 +679,7 @@ function renderRepoSection() {
         );
   const heading = node("div", "section-heading");
   const title = node("div", "");
-  title.append(node("p", "eyebrow", "CONNECTED TO YOUR ACCOUNT"));
+  title.append(node("p", "eyebrow", "Connected to your account"));
   title.append(node("h2", "", "Repositories"));
   heading.append(
     title,
@@ -556,8 +711,8 @@ function renderRepo(repo) {
   const name = node("h3", "repo-name", repo.fullName);
   nameText.append(name);
   const badges = node("div", "repo-badges");
-  if (repo.isPrivate) badges.append(node("span", "private-badge", "PRIVATE"));
-  else badges.append(node("span", "public-badge", "PUBLIC"));
+  if (repo.isPrivate) badges.append(node("span", "private-badge", "Private"));
+  else badges.append(node("span", "public-badge", "Public"));
   nameText.append(badges);
   nameBlock.append(icon, nameText);
 
@@ -913,13 +1068,13 @@ function renderEmpty() {
     node("span", "empty-art-spark", "✳"),
   );
   empty.append(art);
-  empty.append(node("p", "eyebrow", "YOUR IMAGE WORKSPACE"));
+  empty.append(node("p", "eyebrow", "Your image workspace"));
   empty.append(node("h2", "", "No installations found"));
   empty.append(
     node(
       "p",
       "empty-copy",
-      "Install Imgbot on a GitHub account or organization to see its repositories here.",
+      "Install Imgbot on a GitHub account or organization to see its repositories.",
     ),
   );
   const link = node("a", "button button-primary", "Install now");
@@ -930,7 +1085,12 @@ function renderEmpty() {
   return empty;
 }
 
-async function signOut() {
+async function signOut(event) {
+  const target = event?.currentTarget;
+  if (target) {
+    markBusy(target, "Signing out…");
+    target.disabled = true;
+  }
   try {
     // 后端 logout 只收 POST（CSRF 基线，tests/auth.test.ts 锁定）。
     await api("/api/auth/logout", { method: "POST" });
