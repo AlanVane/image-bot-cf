@@ -80,13 +80,21 @@ CREATE TABLE settings (
 );
 
 -- P3 仪表盘：用户会话（cookie 只带 session_id，token 仅存服务端）
+-- `expires_at` = 会话寿命（7 天）；`token_expires_at` = GitHub access token
+-- 寿命（8 小时），到期前 5 分钟用 `refresh_token` 换新。两个 token 在配置
+-- SESSION_ENCRYPTION_KEY 后以 AES-GCM 密文（v1:<iv>:<ct>）落库。
+-- 已有库升级（CREATE TABLE 不会改既有表）：
+--   ALTER TABLE sessions ADD COLUMN refresh_token TEXT;
+--   ALTER TABLE sessions ADD COLUMN token_expires_at TEXT;
 CREATE TABLE sessions (
-  session_id TEXT PRIMARY KEY,
-  user_login TEXT NOT NULL,
-  user_id    INTEGER,
-  user_token TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  expires_at TEXT NOT NULL
+  session_id      TEXT PRIMARY KEY,
+  user_login      TEXT NOT NULL,
+  user_id         INTEGER,
+  user_token      TEXT NOT NULL,
+  refresh_token   TEXT,
+  token_expires_at TEXT,
+  created_at      TEXT NOT NULL,
+  expires_at      TEXT NOT NULL
 );
 CREATE INDEX idx_sessions_expires ON sessions(expires_at);
 

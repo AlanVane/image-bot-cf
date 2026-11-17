@@ -5,7 +5,7 @@
  * 覆盖路由分派（含未命中返回 null）、401 守卫、D1 聚合拼装、手动触发的
  * 可见性校验与 RunDescriptor 形状、settings UPSERT 参数、stats 数字。
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   handleApiRoute,
@@ -56,13 +56,23 @@ interface SettingsSeed {
   value: string | null;
 }
 
+interface SessionSeed {
+  session_id: string;
+  user_login?: string;
+  user_id?: number | null;
+  user_token?: string;
+  refresh_token?: string | null;
+  token_expires_at?: string | null;
+  expires_at?: string | null;
+}
+
 interface Seed {
   runs?: RunsSeed[];
   pulls?: PullsSeed[];
   repos?: ReposSeed[];
   settings?: SettingsSeed[];
-  /** 只用 session_id 判存亡（401 清理断言）。 */
-  sessions?: Array<{ session_id: string }>;
+  /** 会话行（401 清理断言 / 真实 requireUser 的刷新链路）。 */
+  sessions?: SessionSeed[];
 }
 
 type Row = Record<string, unknown>;
@@ -103,7 +113,7 @@ class FakeD1 {
   pulls: PullsSeed[];
   repos: ReposSeed[];
   settings: SettingsSeed[];
-  sessions: Array<{ session_id: string }>;
+  sessions: SessionSeed[];
   /** 记录全部写语句，供 UPSERT 参数断言。 */
   executed: Array<{ sql: string; args: unknown[] }> = [];
 
@@ -257,6 +267,23 @@ class FakeD1 {
         }));
     }
 
+    // 会话行（真实 requireUser 的刷新链路用；其余用例注入 requireUser 不触达）。
+    if (norm.startsWith("SELECT user_login, user_id, user_token")) {
+      const [sessionId] = args as [string];
+      const row = this.sessions.find((entry) => entry.session_id === sessionId);
+      if (!row) return [];
+      return [
+        {
+          user_login: row.user_login ?? null,
+          user_id: row.user_id ?? null,
+          user_token: row.user_token ?? null,
+          refresh_token: row.refresh_token ?? null,
+          token_expires_at: row.token_expires_at ?? null,
+          expires_at: row.expires_at ?? null,
+        },
+      ];
+    }
+
     throw new Error(`FakeD1: unexpected query: ${norm}`);
   }
 
@@ -296,6 +323,22 @@ class FakeD1 {
           key,
           value,
         });
+      return;
+    }
+
+    if (norm.startsWith("UPDATE sessions")) {
+      const [userToken, refreshToken, tokenExpiresAt, sessionId] = args as [
+        string,
+        string,
+        string | null,
+        string,
+      ];
+      const row = this.sessions.find((entry) => entry.session_id === sessionId);
+      if (row) {
+        row.user_token = userToken;
+        row.refresh_token = refreshToken;
+        row.token_expires_at = tokenExpiresAt;
+      }
       return;
     }
 
@@ -440,6 +483,8 @@ function makeHarness(options: {
     GITHUB_APP_SLUG: options.appSlug,
     GITHUB_APP_ID: "1",
     GITHUB_PRIVATE_KEY: TEST_KEY_PEM,
+    GITHUB_CLIENT_ID: "Iv1.test-client-id",
+    GITHUB_CLIENT_SECRET: "test-client-secret",
   } as unknown as Env;
 
   return {
@@ -645,6 +690,100 @@ describe("GitHub 401 → 401 unauthorized + 清会话", () => {
         entry.sql.includes("DELETE FROM sessions"),
       ),
     ).toHaveLength(0);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* 会话 access token 刷新（真实 requireUser 串联）                             */
+/* -------------------------------------------------------------------------- */
+
+describe("真实 requireUser：临近过期先刷新再用新 token 调 GitHub", () => {
+  const COOKIE = { cookie: "ib_session=sess-1" };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** 会话行：token 60 秒后到期，带 refresh token。 */
+  function expiringSession(now: number): SessionSeed {
+    return {
+      session_id: "sess-1",
+      user_login: "octocat",
+      user_id: 583231,
+      user_token: "gho_old",
+      refresh_token: "gho_refresh_old",
+      token_expires_at: new Date(now + 60_000).toISOString(),
+      expires_at: new Date(now + 7 * 24 * 60 * 60 * 1000).toISOString(),
+    };
+  }
+
+  it("刷新成功 → GitHub 调用带新 token，行内 refresh token 轮换", async () => {
+    const now = Date.now();
+    const harness = makeHarness({
+      handlers: {
+        "/user/installations": () => jsonResponse({ installations: [] }),
+      },
+      seed: { sessions: [expiringSession(now)] },
+    });
+    // requireUser 走 globalThis.fetch（api 侧 GitHub 调用走注入的 deps.fetch）。
+    const refreshCalls: Array<{ url: string; body: unknown }> = [];
+    vi.stubGlobal(
+      "fetch",
+      async (input: string, init?: RequestInit): Promise<Response> => {
+        refreshCalls.push({
+          url: String(input),
+          body: JSON.parse(String(init?.body)),
+        });
+        return jsonResponse({
+          access_token: "gho_refreshed",
+          refresh_token: "gho_refresh_next",
+          expires_in: 28800,
+        });
+      },
+    );
+    harness.deps.requireUser = undefined;
+
+    const res = await callApi(harness, "/api/repos", { headers: COOKIE });
+
+    expect(res?.status).toBe(200);
+    expect(await res?.json()).toEqual([]);
+    expect(refreshCalls).toHaveLength(1);
+    expect(refreshCalls[0].url).toBe(
+      "https://github.com/login/oauth/access_token",
+    );
+    expect(refreshCalls[0].body).toMatchObject({
+      grant_type: "refresh_token",
+      refresh_token: "gho_refresh_old",
+    });
+
+    // 关键：后续 GitHub 调用用的是刷新后的 token，不是行里的旧值。
+    expect(harness.fetchCalls[0].authorization).toBe("Bearer gho_refreshed");
+    const row = harness.db.sessions.find(
+      (entry) => entry.session_id === "sess-1",
+    )!;
+    expect(row.user_token).toBe("gho_refreshed");
+    expect(row.refresh_token).toBe("gho_refresh_next");
+  });
+
+  it("刷新被拒（401）→ 请求 401 unauthorized 且删会话行", async () => {
+    const now = Date.now();
+    const harness = makeHarness({
+      handlers: {
+        "/user/installations": () => jsonResponse({ installations: [] }),
+      },
+      seed: { sessions: [expiringSession(now)] },
+    });
+    vi.stubGlobal("fetch", async () =>
+      jsonResponse({ error: "bad_refresh_token" }, 401),
+    );
+    harness.deps.requireUser = undefined;
+
+    const res = await callApi(harness, "/api/repos", { headers: COOKIE });
+
+    expect(res?.status).toBe(401);
+    expect(await res?.json()).toEqual({ error: "unauthorized" });
+    expect(harness.fetchCalls).toHaveLength(0);
+    expect(harness.db.sessions).toEqual([]);
   });
 });
 
