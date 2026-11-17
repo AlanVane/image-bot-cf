@@ -125,7 +125,7 @@ for (const c of comparison) {
   md += `| ${c.name} | ${c.tool} | ${c.before ? fmt(c.before) : "—"} | ${c.after ? fmt(c.after) : "—"} | ${c.savedPct ? c.savedPct + "%" : "—"} | ${c.note} |\n`;
 }
 md += `\n### 差距定性说明（§9-R6）\n\n`;
-md += `- **JPEG 无损**：实测 \`jpegtran -optimize\` 在 sharp 产出的已紧凑 JPEG 上增益 ≈0（±0.05% 噪声）——真实相机/截图素材的 Huffman 冗余更大，开放问题 §11-2 的补强收益需以真实素材复测；目前双方差距集中在**元数据剥离**（03 行可见）。\n`;
+md += `- **JPEG 无损**：我们 = 元数据/COM 段剥离 + **Huffman 重优化**（自建 jpegtran \`-optimize\` wasm，IJG jpegsrc 10，§11-2 已闭环）双候选取小。实测 IJG 重优化在 mozjpeg 已紧凑输出上 ±0.05%（基线表差异，偶发略大——严格变小契约裁决）；真实相机/截图素材的 Huffman 冗余更大，收益需以真实素材复测。\n`;
 md += `- **PNG 无损**：我们 = chunk 剥离 + **oxipng 重压缩**（\`@jsquash/oxipng\`，§11-4 已闭环）双候选取小；与原版 oxipng 同源（wasm 版），数字等价（本机 CLI 不可运行，对照即自身）。\n`;
 md += `- **GIF**：我们 = omggif 解码 + gifenc 重编码；gifsicle -O3 的 LZW 重编码更强（13 行 16.9% vs 我们 9.4%），但我们**剥离注释块**而 gifsicle 默认保留（14 行 −37.3% vs −3.6%），各有所长。\n`;
 md += `- **SVG**：双方同为 svgo 多轮，数字等价。\n`;

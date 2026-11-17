@@ -33,6 +33,7 @@ import {
   validatePngStructure,
 } from "./png";
 import { readGifSize, validateGifStructure } from "./gif";
+import { createHuffmanOptimizer } from "./jpegtran";
 import { looksLikeSvg, svgCodec } from "./svg";
 
 /** §6.2：单文件体积墙（解码前判定）。 */
@@ -97,6 +98,8 @@ export interface CodecWasmModules {
   jpegDecWasm?: WebAssembly.Module;
   /** §11-4/§11-7：oxipng 无损重压缩（ST wasm 164KB，构建期 import）。 */
   oxipngWasm?: WebAssembly.Module;
+  /** §11-2：jpegtran -optimize Huffman 重优化（IJG wasm 146KB，tools/jpegtran-wasm 构建）。 */
+  jpegTranWasm?: WebAssembly.Module;
 }
 
 /**
@@ -119,6 +122,11 @@ export async function initCodecsFromModules(
     ...(modules.jpegEncWasm ? { encodeWasm: modules.jpegEncWasm } : {}),
     ...(modules.jpegDecWasm ? { decodeWasm: modules.jpegDecWasm } : {}),
   });
+  if (modules.jpegTranWasm) {
+    codecs.jpeg.reoptimizeHuffman = await createHuffmanOptimizer(
+      modules.jpegTranWasm,
+    );
+  }
   return codecs;
 }
 
@@ -263,6 +271,16 @@ async function buildCandidates(
 
   if (format === "jpeg") {
     const candidates: Uint8Array[] = [codecs.jpeg!.stripMetadata(bytes)];
+    // Huffman 重优化候选（jpegtran -optimize，§11-2）：与段剥离同场竞争取小。
+    // 坏输入返回 null / 抛错 → 只丢这路候选。
+    if (codecs.jpeg?.reoptimizeHuffman) {
+      try {
+        const reopt = codecs.jpeg.reoptimizeHuffman(bytes);
+        if (reopt) candidates.push(reopt);
+      } catch {
+        // 丢弃此候选
+      }
+    }
     if (aggressive && codecs.jpeg?.decode && codecs.jpeg?.encode) {
       const img = await codecs.jpeg.decode(bytes);
       if (exceedsPixelLimit(img.width, img.height)) return candidates; // 解码后复核

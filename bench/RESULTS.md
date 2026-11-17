@@ -1,4 +1,4 @@
-# 20 图基准集 — 压缩率记录（生成时间 2026-11-17T10:50:52.994Z）
+# 20 图基准集 — 压缩率记录（生成时间 2026-11-17T11:14:52.440Z）
 
 > 环境：Node v26.13.0（本地 V8，非 workerd —— §11-3 真环境实测另行）；
 > sharp/libvips 8.18.7 / @jsquash mozjpeg+png / gifenc / svgo，与 `package-lock.json` 一致。
@@ -9,44 +9,44 @@
 | Fixture | Mode | Before (B) | After (B) | Saved | ms | Result | ≥10KB |
 |:--|:--|--:|--:|--:|--:|:--|:--|
 | 01-jpeg-photo.jpg | lossless | 533,525 | 533,525 | 0.00% | 4 | skipped:not_smaller | — |
-| 01-jpeg-photo.jpg | aggressive | 533,525 | 396,762 | 25.63% | 706 | replaced | ✓ |
+| 01-jpeg-photo.jpg | aggressive | 533,525 | 396,762 | 25.63% | 716 | replaced | ✓ |
 | 02-jpeg-screenshot.jpg | lossless | 43,823 | 43,823 | 0.00% | 0 | skipped:not_smaller | — |
-| 02-jpeg-screenshot.jpg | aggressive | 43,823 | 43,823 | 0.00% | 117 | skipped:not_smaller | — |
+| 02-jpeg-screenshot.jpg | aggressive | 43,823 | 43,823 | 0.00% | 125 | skipped:not_smaller | — |
 | 03-jpeg-metadata.jpg | lossless | 228,695 | 218,645 | 4.39% | 12 | replaced | — |
-| 03-jpeg-metadata.jpg | aggressive | 228,695 | 162,932 | 28.76% | 261 | replaced | ✓ |
+| 03-jpeg-metadata.jpg | aggressive | 228,695 | 162,932 | 28.76% | 291 | replaced | ✓ |
 | 04-jpeg-thumb.jpg | lossless | 8,158 | 8,158 | 0.00% | 0 | skipped:not_smaller | — |
-| 04-jpeg-thumb.jpg | aggressive | 8,158 | 6,580 | 19.34% | 11 | replaced | — |
+| 04-jpeg-thumb.jpg | aggressive | 8,158 | 6,580 | 19.34% | 12 | replaced | — |
 | 05-jpeg-scan.jpg | lossless | 83,967 | 83,967 | 0.00% | 0 | skipped:not_smaller | — |
-| 05-jpeg-scan.jpg | aggressive | 83,967 | 52,067 | 37.99% | 208 | replaced | ✓ |
-| 06-png-photo.png | lossless | 1,468,365 | 917,380 | 37.52% | 608 | replaced | ✓ |
-| 06-png-photo.png | aggressive | 1,468,365 | 917,380 | 37.52% | 655 | replaced | ✓ |
-| 07-png-screenshot.png | lossless | 27,372 | 2,277 | 91.68% | 232 | replaced | ✓ |
-| 07-png-screenshot.png | aggressive | 27,372 | 2,277 | 91.68% | 354 | replaced | ✓ |
-| 08-png-palette.png | lossless | 7,623 | 1,129 | 85.19% | 91 | replaced | — |
-| 08-png-palette.png | aggressive | 7,623 | 1,129 | 85.19% | 118 | replaced | — |
-| 09-png-transparent.png | lossless | 2,631 | 813 | 69.10% | 23 | replaced | — |
-| 09-png-transparent.png | aggressive | 2,631 | 813 | 69.10% | 27 | replaced | — |
-| 10-png-text.png | lossless | 16,648 | 610 | 96.34% | 116 | replaced | ✓ |
-| 10-png-text.png | aggressive | 16,648 | 610 | 96.34% | 205 | replaced | ✓ |
-| 11-png-gradient.png | lossless | 55,879 | 4,516 | 91.92% | 405 | replaced | ✓ |
-| 11-png-gradient.png | aggressive | 55,879 | 4,516 | 91.92% | 493 | replaced | ✓ |
-| 12-gif-static.gif | lossless | 3,455 | 3,299 | 4.52% | 12 | replaced | — |
-| 12-gif-static.gif | aggressive | 3,455 | 3,299 | 4.52% | 21 | replaced | — |
-| 13-gif-animated.gif | lossless | 12,697 | 11,504 | 9.40% | 19 | replaced | — |
-| 13-gif-animated.gif | aggressive | 12,697 | 11,504 | 9.40% | 33 | replaced | — |
-| 14-gif-comments.gif | lossless | 4,487 | 2,813 | 37.31% | 3 | replaced | — |
+| 05-jpeg-scan.jpg | aggressive | 83,967 | 52,067 | 37.99% | 226 | replaced | ✓ |
+| 06-png-photo.png | lossless | 1,468,365 | 917,380 | 37.52% | 616 | replaced | ✓ |
+| 06-png-photo.png | aggressive | 1,468,365 | 917,380 | 37.52% | 591 | replaced | ✓ |
+| 07-png-screenshot.png | lossless | 27,372 | 2,277 | 91.68% | 208 | replaced | ✓ |
+| 07-png-screenshot.png | aggressive | 27,372 | 2,277 | 91.68% | 316 | replaced | ✓ |
+| 08-png-palette.png | lossless | 7,623 | 1,129 | 85.19% | 80 | replaced | — |
+| 08-png-palette.png | aggressive | 7,623 | 1,129 | 85.19% | 112 | replaced | — |
+| 09-png-transparent.png | lossless | 2,631 | 813 | 69.10% | 22 | replaced | — |
+| 09-png-transparent.png | aggressive | 2,631 | 813 | 69.10% | 26 | replaced | — |
+| 10-png-text.png | lossless | 16,648 | 610 | 96.34% | 133 | replaced | ✓ |
+| 10-png-text.png | aggressive | 16,648 | 610 | 96.34% | 209 | replaced | ✓ |
+| 11-png-gradient.png | lossless | 55,879 | 4,516 | 91.92% | 390 | replaced | ✓ |
+| 11-png-gradient.png | aggressive | 55,879 | 4,516 | 91.92% | 427 | replaced | ✓ |
+| 12-gif-static.gif | lossless | 3,455 | 3,299 | 4.52% | 11 | replaced | — |
+| 12-gif-static.gif | aggressive | 3,455 | 3,299 | 4.52% | 11 | replaced | — |
+| 13-gif-animated.gif | lossless | 12,697 | 11,504 | 9.40% | 15 | replaced | — |
+| 13-gif-animated.gif | aggressive | 12,697 | 11,504 | 9.40% | 44 | replaced | — |
+| 14-gif-comments.gif | lossless | 4,487 | 2,813 | 37.31% | 4 | replaced | — |
 | 14-gif-comments.gif | aggressive | 4,487 | 2,813 | 37.31% | 6 | replaced | — |
-| 15-svg-verbose.svg | lossless | 120,964 | 66,436 | 45.08% | 195 | replaced | ✓ |
-| 15-svg-verbose.svg | aggressive | 120,964 | 66,436 | 45.08% | 116 | replaced | ✓ |
+| 15-svg-verbose.svg | lossless | 120,964 | 66,436 | 45.08% | 165 | replaced | ✓ |
+| 15-svg-verbose.svg | aggressive | 120,964 | 66,436 | 45.08% | 111 | replaced | ✓ |
 | 16-svg-sprite.svg | lossless | 20,937 | 16,806 | 19.73% | 31 | replaced | — |
-| 16-svg-sprite.svg | aggressive | 20,937 | 16,806 | 19.73% | 32 | replaced | — |
-| 17-svg-minified.svg | lossless | 188 | 188 | 0.00% | 1 | skipped:not_smaller | — |
+| 16-svg-sprite.svg | aggressive | 20,937 | 16,806 | 19.73% | 30 | replaced | — |
+| 17-svg-minified.svg | lossless | 188 | 188 | 0.00% | 2 | skipped:not_smaller | — |
 | 17-svg-minified.svg | aggressive | 188 | 188 | 0.00% | 1 | skipped:not_smaller | — |
 | 18-edge-tiny.png | lossless | 159 | 118 | 25.79% | 3 | replaced | — |
 | 18-edge-tiny.png | aggressive | 159 | 118 | 25.79% | 4 | replaced | — |
 | 19-edge-large.jpg | lossless | 33,323 | 33,323 | 0.00% | 1 | skipped:not_smaller | — |
-| 19-edge-large.jpg | aggressive | 33,323 | 33,323 | 0.00% | 386 | skipped:not_smaller | — |
-| 20-edge-cmyk.jpg | lossless | 307,906 | 307,906 | 0.00% | 7 | skipped:decode_failed | — |
+| 19-edge-large.jpg | aggressive | 33,323 | 33,323 | 0.00% | 377 | skipped:not_smaller | — |
+| 20-edge-cmyk.jpg | lossless | 307,906 | 307,906 | 0.00% | 6 | skipped:decode_failed | — |
 | 20-edge-cmyk.jpg | aggressive | 307,906 | 307,906 | 0.00% | 1 | skipped:decode_failed | — |
 
 ### 各格式合计（无损模式）
@@ -87,7 +87,7 @@
 
 ### 差距定性说明（§9-R6）
 
-- **JPEG 无损**：实测 `jpegtran -optimize` 在 sharp 产出的已紧凑 JPEG 上增益 ≈0（±0.05% 噪声）——真实相机/截图素材的 Huffman 冗余更大，开放问题 §11-2 的补强收益需以真实素材复测；目前双方差距集中在**元数据剥离**（03 行可见）。
+- **JPEG 无损**：我们 = 元数据/COM 段剥离 + **Huffman 重优化**（自建 jpegtran `-optimize` wasm，IJG jpegsrc 10，§11-2 已闭环）双候选取小。实测 IJG 重优化在 mozjpeg 已紧凑输出上 ±0.05%（基线表差异，偶发略大——严格变小契约裁决）；真实相机/截图素材的 Huffman 冗余更大，收益需以真实素材复测。
 - **PNG 无损**：我们 = chunk 剥离 + **oxipng 重压缩**（`@jsquash/oxipng`，§11-4 已闭环）双候选取小；与原版 oxipng 同源（wasm 版），数字等价（本机 CLI 不可运行，对照即自身）。
 - **GIF**：我们 = omggif 解码 + gifenc 重编码；gifsicle -O3 的 LZW 重编码更强（13 行 16.9% vs 我们 9.4%），但我们**剥离注释块**而 gifsicle 默认保留（14 行 −37.3% vs −3.6%），各有所长。
 - **SVG**：双方同为 svgo 多轮，数字等价。

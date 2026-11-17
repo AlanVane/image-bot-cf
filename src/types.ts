@@ -107,6 +107,8 @@ export interface CodecSet {
   jpeg?: {
     /** P1 无损 = 元数据/段剥离（字节级），见 lane 实现 */
     stripMetadata: (bytes: Uint8Array) => Uint8Array;
+    /** P2 无损 = Huffman 重优化（jpegtran -optimize wasm，§11-2）；坏输入返回 null。 */
+    reoptimizeHuffman?: (bytes: Uint8Array) => Uint8Array | null;
     /** P2 有损重编码（jsquash） */
     decode?: (bytes: Uint8Array) => Promise<ImageDataLike>;
     encode?: (

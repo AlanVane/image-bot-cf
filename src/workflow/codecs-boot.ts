@@ -19,6 +19,7 @@ import * as pngWasmBindings from "@jsquash/png/codec/pkg/squoosh_png_bg.wasm";
 import jpegDecWasm from "@jsquash/jpeg/codec/dec/mozjpeg_dec.wasm";
 import jpegEncWasm from "@jsquash/jpeg/codec/enc/mozjpeg_enc.wasm";
 import * as oxipngWasmBindings from "@jsquash/oxipng/codec/pkg/squoosh_oxipng_bg.wasm";
+import jpegTranWasm from "../optimize/vendor/jpegtran_opt.wasm";
 
 import { initCodecsFromModules } from "../optimize/dispatch";
 import { createGifCodec } from "../optimize/gif";
@@ -60,6 +61,7 @@ export function getCodecSet(): Promise<CodecSet> {
     jpegDecWasm,
     jpegEncWasm,
     oxipngWasm,
+    jpegTranWasm,
   }).then((set) => ({
     // GIF 是纯 JS codec（omggif+gifenc），不走 wasm 装配，完成后挂载（§9-R3）
     ...set,

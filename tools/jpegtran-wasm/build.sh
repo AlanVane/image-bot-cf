@@ -24,8 +24,8 @@ docker run --rm -v "$PWD":/work -w /work emscripten/emsdk:latest bash -c '
     -I dist/jpegsrc \
     -s MODULARIZE=1 -s EXPORT_ES6=1 \
     -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=33554432 \
-    -s EXPORTED_FUNCTIONS=_jpeg_optimize_huffman,_malloc,_free \
-    -s EXPORTED_RUNTIME_METHODS=cwrap,HEAPU8 \
+    -s EXPORTED_FUNCTIONS=_jpeg_optimize_huffman,_get_last_error,_malloc,_free \
+    -s EXPORTED_RUNTIME_METHODS=cwrap,HEAPU8,HEAPU32 \
     -s ENVIRONMENT=web,worker \
     -o dist/jpegtran_opt.mjs
 '
