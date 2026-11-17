@@ -523,3 +523,73 @@ DoD：仪表盘操作与原版 `Web/` 行为对齐；多租户限额生效。
 - GitHub App on Workers 先例：`biw/cloudflare-github-actions-runner`、`cloudflarebase/cloudflarebase`、`universal-github-app-jwt` v2
 - Workers+Containers 图像服务样板：`ccbikai/cloudflare-worker-image`（其 `v1` 分支为纯 Worker + jSquash，可作 P1 wasm 路线的生产对照）
 - isomorphic-git on Workers（备选路径）：isomorphic-git.org/docs/guide-cloudflare-workers
+
+---
+
+## 13. P3 仪表盘技术设计（2026-11-17 评审通过）
+
+### 13.1 总体形态与部署拓扑
+
+| 决策                                                          | 备选                                                                                | 选择理由                                                                                                                                                                                                     |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **静态 SPA + 同域 Worker API**（单 `wrangler deploy` 出一切） | a) 原版式分离 auth 域（`auth.imgbot.net`）；b) Pages + Pages Functions；c) SSR 框架 | 同域 → cookie 天然同源，无跨域 CORS/credentials，少一个部署单元、少一对密钥。`wrangler.jsonc` 的 `assets.run_worker_first: ["/api/*","/healthz"]` + `not_found_handling: "single-page-application"` 承担分流 |
+| **vanilla JS 单文件 SPA，零构建零依赖**                       | Vue（原版）、React、Preact+htm、Svelte                                              | 交互面窄（列表+表单+弹窗），框架 = 构建链 + 依赖维护，与"workerd 直跑"的仓库风格一致；代价见 §13.7                                                                                                           |
+| 全量重渲染（`replaceChildren` + 重建 DOM）                    | 细粒度响应式                                                                        | 状态对象小、仓库数有限，全量重渲染 <1ms，换取无虚拟 DOM 的状态一致性                                                                                                                                         |
+
+### 13.2 认证与会话（`src/dashboard/auth.ts`）
+
+```
+浏览器 → GET /api/auth/login → 302 github.com/authorize（state cookie：HttpOnly/Secure/SameSite=Lax，30min，Path=/api/auth）
+      → GET /api/auth/callback?code&state → 对 state → code 换 user token
+      → D1 sessions 插行（user_login/user_id/user_token/expires_at）→ Set-Cookie ib_session（随机 256-bit id，7 天，Path=/）→ 302 /
+```
+
+- **cookie 只带 session_id，GitHub user token 只存服务端 D1**；HttpOnly + Secure + SameSite=Lax 三件套。
+- **CSRF 双保险**：OAuth `state`（单次、绑定 cookie、30min）；logout 只收 POST（tests/auth.test.ts 锁定）。
+- 会话过期即查即删（惰性清理）；`idx_sessions_expires` 留给将来定时清扫。
+- 弃用 JWT 自包含会话：无法服务端吊销，且 token 依旧要存，不划算。
+
+### 13.3 API 契约与授权（`src/dashboard/api.ts`，5 端点）
+
+```
+GET  /api/me                            → {login, userId, installUrl}
+GET  /api/repos                         → ReposApiEntry[]（GitHub 可见仓 × D1 聚合）
+POST /api/repos/{o}/{r}/optimize        → 202 {runId, started, coalesced}   ← 手动触发入口
+POST /api/repos/{o}/{r}/settings        → {enabled?, defaultBranchOverride?}
+GET  /api/repos/{o}/{r}/stats           → {totals, recentRuns[], pulls[]}
+```
+
+- 授权主体：**用户 token 判可见性**；写操作只投递 RunDescriptor，流水线用 installation token 执行——最小权限分离（§4.1）。
+- 触发 = `REPO_LOCK.submit()`，复用 DO 合并语义：并发返回 `coalesced:true`，前端如实呈现"已在进行中"。
+- 错误体统一 `{"error":"..."}`（401/403/400/502/500）。
+- 列表聚合：每 installation 4 条 D1 查询（runs/pulls/repos.enabled/settings），与仓库数无关；GitHub 侧 `Link` 翻页（10 页 × 100）。
+
+### 13.4 前端架构（`public/`）
+
+- 状态机 `loading → loggedOut | error | ready`；单 state + Map 三件套（`branchDrafts` 草稿 / `repoNotices` 反馈 / `stats` 懒加载缓存）。
+- 写操作悲观更新（成功才落 state），进行中禁用控件；失败行内可重试，不打断全局。
+- 统计面板首次展开才拉 stats（懒加载 + 缓存）；PR 链 `/{owner}/{repo}/pull/{n}`。
+- 可访问性：aria-label/expanded/pressed、`dialog.showModal()`、`prefers-color-scheme`。
+- XSS 面：全程 `textContent`，零 `innerHTML`。
+
+### 13.5 数据模型
+
+- `sessions` 表（P3 前次提交）；repo 开关 → `repos.enabled` UPSERT；分支覆盖 → `settings.default_branch_override` UPSERT（NULL=清除）。
+- **schema 漂移**：`repos.default_branch_override` 列为历史遗留、未使用，`settings` 表是唯一权威——待清理（§13.7）。
+
+### 13.6 与原版对照（偏差 = D9）
+
+| 维度      | 原版 `Web/`                    | 本实现                                    | 性质           |
+| --------- | ------------------------------ | ----------------------------------------- | -------------- |
+| 框架/观感 | Vue 2 + Bootstrap              | vanilla + 自研编辑风主题                  | 偏差（有意）   |
+| auth 域   | `auth.imgbot.net` 跨域 + axios | 同域 HttpOnly cookie                      | 等价且更简     |
+| 操作面    | 装/退、请求优化、分支覆盖      | 同左 + 统计面板（原版无）                 | 超集           |
+| 操作文案  | —                              | 逐字沿用（"Request new optimization" 等） | 对齐           |
+| 轮询      | 30s 轮询 lastchecked           | 操作后即时刷新                            | 简化（可接受） |
+| 计费墙    | Marketplace planId 门控私有仓  | 无（D2/D3）                               | 偏差（登记）   |
+
+### 13.7 已知弱点与待办
+
+1. **前端零自动化测试**（仅 `node --check` + 手动）——最大弱点；补法方向：playwright 级 e2e（mock API 层）。
+2. `repos.default_branch_override` 死列清理（schema 迁移）。
+3. user token 在 D1 明文（平台静态加密）；如需应用层加密加 AES-GCM 即可，当前判定不必要。
