@@ -86,11 +86,9 @@
 
 ## 4. 开源发布前须完成的合规动作（清单）
 
-- [ ] **冻结依赖清单**：`npm ls --omit=dev --all` + `npm ci` 后重新生成本文件 §1/§2；
-      CI 中加许可证扫描（如 `license-checker` / `licensee`），allowlist：
-      MIT、Apache-2.0、BSD-2-Clause、BSD-3-Clause、ISC、CC0-1.0、Zlib、IJG、
-      BlueOak-1.0.0；命中 GPL/AGPL/LGPL/MPL 即失败，例外须附评审记录。
-      （2026-11-17：§1 已手动核对至 P2 全量；CI 扫描仍待加。）
+- [x] **冻结依赖清单**（2026-11-17）：§1 已手动核对至 P2 全量；CI 许可证扫描已落地
+      （`.github/workflows/ci.yml` + `scripts/license-scan.mjs`，生产依赖树范围，
+      allowlist 同上，命中 copyleft 即失败）。
 - [x] **随分发附带许可证文本**（2026-11-17）：`THIRD_PARTY_NOTICES.md` 逐条收录 §1
       组件完整许可证文本与版权行（含 `@jsquash/*` codec 专项许可）；Apache-2.0 的
       NOTICE/版权与 BSD-3 免责均已保留。
