@@ -71,6 +71,7 @@ import {
   bytesToKb,
   chunk,
   shouldAbortForTruncatedReplays,
+  shouldSkipDisabled,
   splitOwnerRepo,
   stagingRefForRun,
   sumSizes,
@@ -312,6 +313,19 @@ function errorText(err: unknown): string {
   const message =
     err instanceof Error ? `${err.name}: ${err.message}` : String(err);
   return message.slice(0, MAX_ERROR_LENGTH);
+}
+
+/**
+ * 仓库被仪表盘停用（`repos.enabled = 0`）时的收尾信号。
+ *
+ * 只在 step **外**抛出：步进重试只作用于 step 内部，这里不重试、不算失败；
+ * `run()` 的 catch 会把它映射成 `skipped_disabled` 并照常走 cleanup（删暂存 + 释锁）。
+ */
+class RepoDisabledSignal extends Error {
+  constructor() {
+    super("repo_disabled");
+    this.name = "RepoDisabledSignal";
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -678,11 +692,27 @@ export class OptimizeRun extends WorkflowEntrypoint<Env, RunDescriptor> {
       /* ---------------------------------------------------------------- */
       /* ② load-config：默认分支 + 根树 + `.imgbotconfig`                  */
       /* ---------------------------------------------------------------- */
-      loaded = await step.do<LoadConfigResult>(
+      const loadedConfig = await step.do<LoadConfigResult | null>(
         "load-config",
         STEP_CONFIG.loadConfig,
         async () => {
           await this.heartbeat(runId, installationId, params.repo);
+
+          // 仪表盘开关必须真正生效：`repos.enabled = 0` → 本轮不扫描、不开 PR。
+          // 缺行 = 默认启用（与 dashboard 的 enabled 语义一致）；不扣配额、不算失败。
+          const repoRow = await env.DB.prepare(
+            "SELECT enabled FROM repos WHERE installation_id = ? AND name = ?",
+          )
+            .bind(installationId, params.repo)
+            .first<{ enabled: number | null }>();
+          if (shouldSkipDisabled(repoRow?.enabled ?? null)) {
+            await patchRun(env, runId, {
+              state: "skipped_disabled",
+              error: "repo_disabled",
+            });
+            return null;
+          }
+
           const { client, token } = await githubContext(env, installationId);
 
           // base_ref 缺失时用仓库默认分支（§5.2 描述符允许省略）
@@ -759,6 +789,10 @@ export class OptimizeRun extends WorkflowEntrypoint<Env, RunDescriptor> {
           };
         },
       );
+
+      // 停用仓库：在 step 外结束本轮（不进重试），由 catch 映射为 skipped_disabled。
+      if (loadedConfig === null) throw new RepoDisabledSignal();
+      loaded = loadedConfig;
 
       /* ---------------------------------------------------------------- */
       /* ③ scan-tree：忽略规则 + image_cache 比对 → 分块                   */
@@ -1328,8 +1362,14 @@ export class OptimizeRun extends WorkflowEntrypoint<Env, RunDescriptor> {
             : committed.status;
       }
     } catch (err) {
-      failure = err;
-      terminalState = "failed";
+      if (err instanceof RepoDisabledSignal) {
+        // load-config 已把 runs.state 写成 skipped_disabled（error = repo_disabled）；
+        // 正常收尾，不记失败、不重试。
+        terminalState = "skipped_disabled";
+      } else {
+        failure = err;
+        terminalState = "failed";
+      }
     }
 
     /* ------------------------------------------------------------------ */

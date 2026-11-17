@@ -20,8 +20,21 @@ export interface QuotaVerdict {
 
 /** 解析 `QUOTA_DAILY_RUNS`：非正数/缺省/非法 → 0（不限）。 */
 export function dailyRunLimit(env: Env): number {
-  const raw = Number((env.QUOTA_DAILY_RUNS ?? "").trim());
-  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+  return parsePositiveIntVar(env.QUOTA_DAILY_RUNS);
+}
+
+/**
+ * 解析 `QUOTA_PRIVATE_REPOS`：每个 installation 可同时启用的私有仓库数上限。
+ * 非正数/缺省/非法 → 0（不限），与 `QUOTA_DAILY_RUNS` 同一解析约定。
+ */
+export function privateRepoLimit(env: Env): number {
+  return parsePositiveIntVar(env.QUOTA_PRIVATE_REPOS);
+}
+
+/** 字符串 vars → 正整数；0/缺省/非法/负数 → 0（语义 = 不限）。 */
+function parsePositiveIntVar(raw: string | undefined): number {
+  const value = Number((raw ?? "").trim());
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
 }
 
 /** 今天（UTC）的起始时刻，ISO 前缀比较即可。 */

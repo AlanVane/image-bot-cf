@@ -242,6 +242,16 @@ export function shouldAbortForTruncatedReplays(
   return treeTruncated && droppedReplays > 0;
 }
 
+/**
+ * 仪表盘开关的运行时语义（§10）：`repos.enabled = 0` 的仓库本轮直接收尾。
+ * 缺行（`null`/`undefined`）= 默认启用，保持原有行为；只有显式 0 才跳过。
+ */
+export function shouldSkipDisabled(
+  enabled: number | null | undefined,
+): boolean {
+  return enabled === 0;
+}
+
 export async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)]

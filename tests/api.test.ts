@@ -471,6 +471,8 @@ function makeHarness(options: {
   handlers: Record<string, FetchHandler>;
   user?: SessionUser | null;
   appSlug?: string;
+  /** `QUOTA_PRIVATE_REPOS`（字符串 vars；缺省 = 不限）。 */
+  quotaPrivateRepos?: string;
 }): Harness {
   const db = new FakeD1(options.seed);
   const lock = new FakeRepoLock();
@@ -485,6 +487,7 @@ function makeHarness(options: {
     GITHUB_PRIVATE_KEY: TEST_KEY_PEM,
     GITHUB_CLIENT_ID: "Iv1.test-client-id",
     GITHUB_CLIENT_SECRET: "test-client-secret",
+    QUOTA_PRIVATE_REPOS: options.quotaPrivateRepos,
   } as unknown as Env;
 
   return {
@@ -525,12 +528,13 @@ function postJson(body: unknown): RequestInit {
 function repoHandlers(
   fullName = "o/r",
   extra: Record<string, FetchHandler> = {},
+  isPrivate = false,
 ): Record<string, FetchHandler> {
   return {
     [`/repos/${fullName}`]: () =>
       jsonResponse({
         full_name: fullName,
-        private: false,
+        private: isPrivate,
         default_branch: "main",
       }),
     [`/repos/${fullName}/installation`]: () => jsonResponse({ id: 42 }),
@@ -1373,6 +1377,182 @@ describe("POST /api/repos/{owner}/{name}/settings", () => {
     );
     expect(res?.status).toBe(403);
     expect(harness.db.executed).toHaveLength(0);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* 私有仓库启用配额（QUOTA_PRIVATE_REPOS）                                      */
+/* -------------------------------------------------------------------------- */
+
+/** `GET /user/installations/{id}/repositories` 的固定响应。 */
+function repoListHandler(
+  repos: Array<{ fullName: string; private: boolean }>,
+): FetchHandler {
+  return () =>
+    jsonResponse({
+      repositories: repos.map((repo) => ({
+        full_name: repo.fullName,
+        private: repo.private,
+      })),
+    });
+}
+
+describe("POST /api/repos/{owner}/{name}/settings 私有仓库配额", () => {
+  it("私有仓库达上限 → 429 private_quota_exceeded，且不写 D1", async () => {
+    const harness = makeHarness({
+      quotaPrivateRepos: "1",
+      handlers: repoHandlers(
+        "o/private-r",
+        {
+          "/user/installations/42/repositories": repoListHandler([
+            { fullName: "o/private-r", private: true },
+            { fullName: "o/other", private: true },
+          ]),
+        },
+        true,
+      ),
+      seed: {
+        repos: [{ installation_id: 42, name: "o/other", enabled: 1 }],
+      },
+    });
+
+    const res = await callApi(
+      harness,
+      "/api/repos/o/private-r/settings",
+      postJson({ enabled: true }),
+    );
+
+    expect(res?.status).toBe(429);
+    expect(await res?.json()).toEqual({ error: "private_quota_exceeded" });
+    expect(harness.db.executed).toHaveLength(0);
+    expect(
+      harness.fetchCalls.some((call) =>
+        call.url.includes("/user/installations/42/repositories"),
+      ),
+    ).toBe(true);
+  });
+
+  it("公开仓库不受私有配额约束（达上限也放行，且不拉仓库清单）", async () => {
+    const harness = makeHarness({
+      quotaPrivateRepos: "1",
+      handlers: repoHandlers("o/public-r"),
+      seed: {
+        repos: [{ installation_id: 42, name: "o/other", enabled: 1 }],
+      },
+    });
+
+    const res = await callApi(
+      harness,
+      "/api/repos/o/public-r/settings",
+      postJson({ enabled: true }),
+    );
+
+    expect(res?.status).toBe(200);
+    expect(harness.db.executed).toHaveLength(1);
+    expect(harness.db.executed[0].args).toEqual([42, "o/public-r", 1]);
+    expect(
+      harness.fetchCalls.some((call) =>
+        call.url.includes("/user/installations/42/repositories"),
+      ),
+    ).toBe(false);
+  });
+
+  it("未达上限 → 放行；已停用的私有仓库不占名额；目标仓库自身不计入", async () => {
+    const harness = makeHarness({
+      quotaPrivateRepos: "2",
+      handlers: repoHandlers(
+        "o/private-r",
+        {
+          "/user/installations/42/repositories": repoListHandler([
+            { fullName: "o/private-r", private: true },
+            { fullName: "o/other", private: true },
+            { fullName: "o/off", private: true },
+            { fullName: "o/public-r", private: false },
+          ]),
+        },
+        true,
+      ),
+      seed: {
+        repos: [
+          { installation_id: 42, name: "o/private-r", enabled: 0 },
+          { installation_id: 42, name: "o/other", enabled: 1 },
+          { installation_id: 42, name: "o/off", enabled: 0 },
+        ],
+      },
+    });
+
+    const res = await callApi(
+      harness,
+      "/api/repos/o/private-r/settings",
+      postJson({ enabled: true }),
+    );
+
+    // 已启用私有仓库 = o/other（1 个）< 2 → 放行。
+    expect(res?.status).toBe(200);
+    expect(harness.db.executed).toHaveLength(1);
+    expect(harness.db.executed[0].args).toEqual([42, "o/private-r", 1]);
+  });
+
+  it("不限额（0）→ 私有仓库直接放行，不查 GitHub 仓库清单", async () => {
+    const harness = makeHarness({
+      quotaPrivateRepos: "0",
+      handlers: repoHandlers(
+        "o/private-r",
+        {
+          // 若被调用会返回多到超额的私有仓库；断言它从未被请求。
+          "/user/installations/42/repositories": repoListHandler([
+            { fullName: "o/a", private: true },
+            { fullName: "o/b", private: true },
+          ]),
+        },
+        true,
+      ),
+      seed: {
+        repos: [
+          { installation_id: 42, name: "o/a", enabled: 1 },
+          { installation_id: 42, name: "o/b", enabled: 1 },
+        ],
+      },
+    });
+
+    const res = await callApi(
+      harness,
+      "/api/repos/o/private-r/settings",
+      postJson({ enabled: true }),
+    );
+
+    expect(res?.status).toBe(200);
+    expect(harness.db.executed).toHaveLength(1);
+    expect(
+      harness.fetchCalls.some((call) =>
+        call.url.includes("/user/installations/42/repositories"),
+      ),
+    ).toBe(false);
+  });
+
+  it("只传 defaultBranchOverride → 不触发私有配额", async () => {
+    const harness = makeHarness({
+      quotaPrivateRepos: "1",
+      handlers: repoHandlers("o/private-r", {}, true),
+      seed: {
+        repos: [{ installation_id: 42, name: "o/other", enabled: 1 }],
+      },
+    });
+
+    const res = await callApi(
+      harness,
+      "/api/repos/o/private-r/settings",
+      postJson({ defaultBranchOverride: "release" }),
+    );
+
+    expect(res?.status).toBe(200);
+    expect(harness.db.executed).toHaveLength(1);
+    expect(harness.db.executed[0].sql).toContain("INSERT INTO settings");
+    expect(
+      harness.fetchCalls.some((call) =>
+        call.url.includes("/user/installations/42/repositories"),
+      ),
+    ).toBe(false);
   });
 });
 

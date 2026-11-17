@@ -14,6 +14,7 @@ import {
   bytesToKb,
   chunk,
   shouldAbortForTruncatedReplays,
+  shouldSkipDisabled,
   splitOwnerRepo,
   stagingRefForRun,
   sumSizes,
@@ -302,5 +303,20 @@ describe("截断树丢重放的显式中止（P1 静默回滚修复）", () => {
   it("非截断树的缺失只是陈旧缓存行 → 不中止（交给后续轮自愈）", () => {
     expect(shouldAbortForTruncatedReplays(false, 5)).toBe(false);
     expect(shouldAbortForTruncatedReplays(false, 0)).toBe(false);
+  });
+});
+
+describe("仪表盘停用开关的运行时语义（repos.enabled）", () => {
+  it("显式 0（行存在且停用）→ 跳过本轮", () => {
+    expect(shouldSkipDisabled(0)).toBe(true);
+  });
+
+  it("1（行存在且启用）→ 照常跑", () => {
+    expect(shouldSkipDisabled(1)).toBe(false);
+  });
+
+  it("缺行 / NULL（默认启用）→ 照常跑（保持原行为）", () => {
+    expect(shouldSkipDisabled(null)).toBe(false);
+    expect(shouldSkipDisabled(undefined)).toBe(false);
   });
 });
