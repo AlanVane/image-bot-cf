@@ -61,6 +61,28 @@ export default {
       });
     }
 
+    if (url.pathname === "/detached") {
+      // Illegal invocation 诊断：拆调用 vs 方法调用（workerd WebIDL this 语义）
+      const out: Record<string, string> = {};
+      const detached = globalThis.fetch as unknown as (
+        input: string,
+        init?: RequestInit,
+      ) => Promise<Response>;
+      try {
+        await detached("https://example.com", { method: "HEAD" });
+        out.detachedFetch = "ok";
+      } catch (err) {
+        out.detachedFetch = String(err);
+      }
+      try {
+        await globalThis.fetch("https://example.com", { method: "HEAD" });
+        out.methodFetch = "ok";
+      } catch (err) {
+        out.methodFetch = String(err);
+      }
+      return Response.json(out);
+    }
+
     if (url.pathname === "/bench") {
       const mp = Number(url.searchParams.get("mp") ?? "3");
       const kind = url.searchParams.get("kind") ?? "jpeg-encode";

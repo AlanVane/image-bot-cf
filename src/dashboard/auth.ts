@@ -342,7 +342,11 @@ interface ExchangeArgs {
 }
 
 async function exchangeCode(args: ExchangeArgs): Promise<string> {
-  const res = await args.fetchImpl(GITHUB_OAUTH_TOKEN_URL, {
+  // ⚠️ workerd 陷阱（同 gitdata.ts）：必须裸调用——`args.fetchImpl(...)` 是成员调用，
+  // 原生 fetch 的 WebIDL `this` 检查会抛 Illegal invocation（测试 mock 是普通
+  // 函数所以测不出来；2026-11-17 真仓 OAuth 实测踩坑）。
+  const fetchImpl = args.fetchImpl;
+  const res = await fetchImpl(GITHUB_OAUTH_TOKEN_URL, {
     method: "POST",
     headers: {
       accept: "application/json",

@@ -424,6 +424,42 @@ describe("GET /api/auth/callback", () => {
     expect(clearedState).toContain("Max-Age=0");
   });
 
+  it("fetchImpl 必须裸调用：严格 this 的 fetch（复刻 workerd WebIDL）不炸", async () => {
+    const h = createDb();
+    const env = createEnv(h.db);
+    const fetchHarness = successFetch();
+    // 复刻 workerd：原生 fetch 被成员调用（this ≠ undefined）→ Illegal invocation。
+    // 2026-11-17 真仓 OAuth 实测踩坑：`args.fetchImpl(...)` 成员调用即触发。
+    const strictFetch: typeof fetchHarness.fetchImpl = function (
+      this: unknown,
+      input,
+      init,
+    ) {
+      if (this !== undefined) {
+        throw new TypeError(
+          "Illegal invocation: function called with incorrect `this` reference.",
+        );
+      }
+      return fetchHarness.fetchImpl!(input, init);
+    };
+    const deps: AuthDeps = {
+      fetchImpl: strictFetch,
+      now: () => FIXED_NOW,
+    };
+
+    const url = callbackUrl({ code: "the-code", state: "state-ok" });
+    const res = await authRoute(
+      env,
+      new Request(url, {
+        headers: { cookie: cookieHeader([STATE_COOKIE, "state-ok"]) },
+      }),
+      deps,
+    );
+
+    expect(res!.status).toBe(302);
+    expect(fetchHarness.calls).toHaveLength(2);
+  });
+
   it("state 不符 → 400，不交换 token / 不落库", async () => {
     const h = createDb();
     const env = createEnv(h.db);
