@@ -1103,15 +1103,6 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   margin: 0 auto;
 }
 
-.docs-topbar-note {
-  margin-left: 23px;
-  padding-left: 22px;
-  border-left: 1px solid var(--line-strong);
-  color: var(--muted);
-  font-family: var(--label);
-  font-size: 12px;
-}
-
 .docs-home-link {
   display: inline-flex;
   align-items: center;
@@ -1485,7 +1476,6 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   .docs-footer { width: calc(100% - 40px); }
 
   .docs-topbar-inner { min-height: 60px; }
-  .docs-topbar-note { margin-left: 13px; padding-left: 13px; font-size: 12px; }
   .docs-home-link { gap: 5px; font-size: 13px; }
 
   .docs-hero { min-height: 272px; align-items: flex-start; padding: 52px 0 42px; }
@@ -1534,7 +1524,6 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   .docs-closing-inner,
   .docs-footer { width: calc(100% - 32px); }
 
-  .docs-topbar-note { display: none; }
   .docs-home-link { font-size: 13px; }
   .docs-hero h1 { font-size: 45px; }
   .docs-toc ol { gap: 9px; }
