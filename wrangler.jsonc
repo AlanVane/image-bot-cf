@@ -34,6 +34,12 @@
         "max_batch_size": 1,
         "max_retries": 3,
         "dead_letter_queue": "router-dlq"
+      },
+      // P0：DLQ 捕获消费者 —— 消息落 D1 dead_letters（不再重试，max_retries: 0）
+      {
+        "queue": "router-dlq",
+        "max_batch_size": 10,
+        "max_retries": 0
       }
     ]
   },
@@ -76,9 +82,11 @@
   },
   // 仪表盘 "Install now" 直达安装页（§13.3 installUrl；slug 公开信息非密钥）
   // QUOTA_DAILY_RUNS：D10 多租户配额（每 installation 每 UTC 日 run 上限；0 = 不限）
+  // PUBLIC_BASE_URL：OAuth redirect_uri 钉死到正式域名（防 Host 头注入/多域名漂移）
   "vars": {
     "GITHUB_APP_SLUG": "image-bot-cf",
-    "QUOTA_DAILY_RUNS": "0"
+    "QUOTA_DAILY_RUNS": "0",
+    "PUBLIC_BASE_URL": "https://imgbot.alanpally.com"
   },
   // P3 仪表盘：静态资源与 API 同域；/api/* 先进 Worker，其余交资产层（SPA 兜底）
   "assets": {

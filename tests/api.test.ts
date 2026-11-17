@@ -61,6 +61,8 @@ interface Seed {
   pulls?: PullsSeed[];
   repos?: ReposSeed[];
   settings?: SettingsSeed[];
+  /** 只用 session_id 判存亡（401 清理断言）。 */
+  sessions?: Array<{ session_id: string }>;
 }
 
 type Row = Record<string, unknown>;
@@ -101,6 +103,7 @@ class FakeD1 {
   pulls: PullsSeed[];
   repos: ReposSeed[];
   settings: SettingsSeed[];
+  sessions: Array<{ session_id: string }>;
   /** 记录全部写语句，供 UPSERT 参数断言。 */
   executed: Array<{ sql: string; args: unknown[] }> = [];
 
@@ -109,6 +112,7 @@ class FakeD1 {
     this.pulls = [...(seed.pulls ?? [])];
     this.repos = [...(seed.repos ?? [])];
     this.settings = [...(seed.settings ?? [])];
+    this.sessions = [...(seed.sessions ?? [])];
   }
 
   prepare(sql: string): FakeStatement {
@@ -274,6 +278,14 @@ class FakeD1 {
           key,
           value,
         });
+      return;
+    }
+
+    if (norm.startsWith("DELETE FROM sessions")) {
+      const [sessionId] = args as [string];
+      this.sessions = this.sessions.filter(
+        (row) => row.session_id !== sessionId,
+      );
       return;
     }
 
@@ -550,6 +562,147 @@ describe("会话守卫", () => {
       userId: 583231,
       installUrl: "https://github.com/apps/my-imgbot/installations/new",
     });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* 上游 401（user token 过期/被撤销）                                          */
+/* -------------------------------------------------------------------------- */
+
+describe("GitHub 401 → 401 unauthorized + 清会话", () => {
+  const COOKIE = { cookie: "ib_session=sess-1" };
+
+  it("listRepos 401（/user/installations）→ 401 而非 502，并删掉 sessions 行", async () => {
+    const harness = makeHarness({
+      handlers: {
+        "/user/installations": () =>
+          jsonResponse({ message: "Bad credentials" }, 401),
+      },
+      seed: { sessions: [{ session_id: "sess-1" }] },
+    });
+
+    const res = await callApi(harness, "/api/repos", { headers: COOKIE });
+
+    expect(res?.status).toBe(401);
+    expect(await res?.json()).toEqual({ error: "unauthorized" });
+    expect(harness.db.sessions).toEqual([]);
+    const deletes = harness.db.executed.filter((entry) =>
+      entry.sql.includes("DELETE FROM sessions"),
+    );
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0].args).toEqual(["sess-1"]);
+  });
+
+  it("repo 调用 401（resolveRepoAccess）→ 同样 401 + 清会话，且不启动 run", async () => {
+    const harness = makeHarness({
+      handlers: {
+        "/repos/o/r": () => jsonResponse({ message: "Bad credentials" }, 401),
+      },
+      seed: { sessions: [{ session_id: "sess-1" }] },
+    });
+
+    const res = await callApi(harness, "/api/repos/o/r/optimize", {
+      method: "POST",
+      headers: COOKIE,
+    });
+
+    expect(res?.status).toBe(401);
+    expect(await res?.json()).toEqual({ error: "unauthorized" });
+    expect(harness.db.sessions).toEqual([]);
+    expect(harness.lock.calls).toHaveLength(0);
+  });
+
+  it("无会话 cookie 时仍返回 401（只是没有行可删）", async () => {
+    const harness = makeHarness({
+      handlers: {
+        "/user/installations": () => jsonResponse({ message: "boom" }, 401),
+      },
+    });
+
+    const res = await callApi(harness, "/api/repos");
+    expect(res?.status).toBe(401);
+    expect(await res?.json()).toEqual({ error: "unauthorized" });
+    expect(
+      harness.db.executed.filter((entry) =>
+        entry.sql.includes("DELETE FROM sessions"),
+      ),
+    ).toHaveLength(0);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Origin 校验（CSRF 纵深防御）                                                */
+/* -------------------------------------------------------------------------- */
+
+describe("POST 的 Origin 校验", () => {
+  it("异源 Origin → 403 forbidden，且不触达 GitHub / D1", async () => {
+    const harness = makeHarness({ handlers: repoHandlers("o/r") });
+
+    for (const [path, init] of [
+      [
+        "/api/repos/o/r/settings",
+        {
+          ...postJson({ enabled: false }),
+          headers: {
+            "content-type": "application/json",
+            origin: "https://evil.example",
+          },
+        },
+      ],
+      [
+        "/api/repos/o/r/optimize",
+        { method: "POST", headers: { origin: "https://evil.example" } },
+      ],
+    ] as const) {
+      const res = await callApi(harness, path, init);
+      expect(res?.status).toBe(403);
+      expect(await res?.json()).toEqual({ error: "forbidden" });
+    }
+
+    expect(harness.fetchCalls).toHaveLength(0);
+    expect(harness.db.executed).toHaveLength(0);
+  });
+
+  it("同源 Origin（含端口比较用 host）→ 放行", async () => {
+    const harness = makeHarness({ handlers: repoHandlers("o/r") });
+
+    const res = await callApi(harness, "/api/repos/o/r/settings", {
+      ...postJson({ enabled: false }),
+      headers: {
+        "content-type": "application/json",
+        origin: "https://dash.test",
+      },
+    });
+
+    expect(res?.status).toBe(200);
+  });
+
+  it("缺 Origin（非浏览器客户端）→ 放行", async () => {
+    const harness = makeHarness({ handlers: repoHandlers("o/r") });
+    const res = await callApi(harness, "/api/repos/o/r/optimize", {
+      method: "POST",
+    });
+    expect(res?.status).toBe(202);
+  });
+
+  it("畸形 Origin（`null`）→ 视为跨源 403", async () => {
+    const harness = makeHarness({ handlers: repoHandlers("o/r") });
+    const res = await callApi(harness, "/api/repos/o/r/optimize", {
+      method: "POST",
+      headers: { origin: "null" },
+    });
+    expect(res?.status).toBe(403);
+  });
+
+  it("GET 读取类请求不做 Origin 校验（stats 正常 200）", async () => {
+    const harness = makeHarness({
+      handlers: repoHandlers("o/r"),
+      seed: {},
+    });
+    const res = await callApi(harness, "/api/repos/o/r/stats", {
+      headers: { origin: "https://evil.example" },
+    });
+    expect(res?.status).toBe(200);
   });
 });
 

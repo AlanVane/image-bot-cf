@@ -3,8 +3,10 @@
  *
  *   fetch     POST /api/hook → ingress（HMAC + delivery 去重 + 入队）
  *             GET  /healthz  → 200 `ok`（wrangler dev / 探活）
+ *             **所有响应统一挂安全头**（security.ts：CSP / nosniff / DENY …）
  *   queue     router 消费者 → RepoLock 漏斗 → Workflow（§5.4）
- *   scheduled 30min 卡死 PR 巡检 + schedule 重优化扫描（P2，§2.4）
+ *             router-dlq 消费者 → D1 `dead_letters`（只留证据，不再重试）
+ *   scheduled 30min 卡死 PR 巡检 + 每日 schedule 重优化 / 保留策略清理（§2.4）
  */
 import type { Env, RunDescriptor } from "./types";
 import { handleWebhook } from "./ingress/webhook";
@@ -16,6 +18,12 @@ import {
   runPrPoisonSweep,
   runScheduleSweep,
 } from "./ingress/scheduled";
+import { withSecurityHeaders } from "./security";
+import {
+  DEAD_LETTER_QUEUE,
+  handleDeadLetterBatch,
+  pruneExpired,
+} from "./maintenance";
 
 export { RepoLock } from "./do/repo-lock";
 export { OptimizeRun } from "./workflow/optimize-run";
@@ -27,67 +35,17 @@ export default {
     env: Env,
     ctx: ExecutionContext,
   ): Promise<Response> {
-    const url = new URL(request.url);
-
-    if (url.pathname === "/api/hook") {
-      // ctx 让合并删分支能在 202 之后继续跑（waitUntil）。
-      return handleWebhook(request, env, ctx);
-    }
-    // P3 仪表盘：OAuth 三路由（/api/auth/*）
-    const auth = await handleAuthRoute(env, request, url);
-    if (auth) return auth;
-    // P3 仪表盘：REST API（自带 401 守卫；未命中返回 null）
-    const api = await handleApiRoute(env, request, url);
-    if (api) return api;
-
-    if (url.pathname === "/healthz" && request.method === "GET") {
-      return new Response("ok", {
-        status: 200,
-        headers: { "content-type": "text/plain; charset=utf-8" },
-      });
-    }
-    // 静态资源（run_worker_first 只保 /api/*；SPA 兜底在资产层）
-    return env.ASSETS.fetch(request);
+    // P0 加固：API / OAuth / 静态资产的**所有**响应统一挂安全头。
+    return withSecurityHeaders(await dispatch(request, env, ctx));
   },
 
-  async queue(batch: MessageBatch<RunDescriptor>, env: Env): Promise<void> {
-    // Queues 陷阱：任一消息抛出未捕获错误 → **整批**重试。
-    // 因此每条消息独立 try/catch，成功/永久失败各自 ack。
-    for (const msg of batch.messages) {
-      try {
-        const desc = msg.body;
-        if (!isRunDescriptor(desc)) {
-          console.error("router: malformed message body, dropping", desc);
-          msg.ack();
-          continue;
-        }
-
-        // §5.4 唯一入口漏斗：锁空闲 → 建实例；锁占用 → 防抖合并
-        const stub = env.REPO_LOCK.getByName(
-          `repo:${desc.installation_id}/${desc.repo}`,
-        );
-        const result = await stub.submit(desc);
-        if (result.quotaExceeded) {
-          // D10 配额：不启动、不重试（ack），运维看日志/仪表盘 429
-          console.warn(
-            `router: quota exceeded, dropping run ${desc.run_id} for ${desc.repo}`,
-          );
-        }
-        msg.ack();
-      } catch (error) {
-        if (isRetryable(error)) {
-          const attempts = Math.max(1, msg.attempts ?? 1);
-          msg.retry({ delaySeconds: 30 * attempts });
-        } else {
-          // 不可重试：ack 掉，避免同一条消息打满 max_retries 进 DLQ
-          console.error(
-            "router: non-retryable submit failure, dropping",
-            error,
-          );
-          msg.ack();
-        }
-      }
+  async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
+    // 一个 Worker 挂多个 consumer（router + router-dlq）：按批次队列名分派。
+    if (isDeadLetterQueue(batch.queue)) {
+      await handleDeadLetterBatch(batch, env);
+      return;
     }
+    await handleRouterBatch(batch as MessageBatch<RunDescriptor>, env);
   },
 
   async scheduled(
@@ -111,12 +69,97 @@ export default {
           console.error("cron: schedule sweep failed", error);
         }),
       );
+      // 保留策略：只在每日 03:00 的这条 cron 上跑（这条本身就是日频）。
+      ctx.waitUntil(
+        pruneExpired(env)
+          .then((counts) => {
+            console.log("cron: retention prune", counts);
+          })
+          .catch((error) => {
+            console.error("cron: retention prune failed", error);
+          }),
+      );
       return;
     }
 
     console.warn(`cron: unrecognized schedule ${JSON.stringify(event.cron)}`);
   },
 };
+
+/** DLQ 队列名判定（`router-dlq`；也容忍配置里的其他 `*-dlq`）。 */
+function isDeadLetterQueue(queue: string): boolean {
+  return queue === DEAD_LETTER_QUEUE || queue.endsWith("-dlq");
+}
+
+/** `router` 消费者：把描述符交给 RepoLock 漏斗。 */
+async function handleRouterBatch(
+  batch: MessageBatch<RunDescriptor>,
+  env: Env,
+): Promise<void> {
+  // Queues 陷阱：任一消息抛出未捕获错误 → **整批**重试。
+  // 因此每条消息独立 try/catch，成功/永久失败各自 ack。
+  for (const msg of batch.messages) {
+    try {
+      const desc = msg.body;
+      if (!isRunDescriptor(desc)) {
+        console.error("router: malformed message body, dropping", desc);
+        msg.ack();
+        continue;
+      }
+
+      // §5.4 唯一入口漏斗：锁空闲 → 建实例；锁占用 → 防抖合并
+      const stub = env.REPO_LOCK.getByName(
+        `repo:${desc.installation_id}/${desc.repo}`,
+      );
+      const result = await stub.submit(desc);
+      if (result.quotaExceeded) {
+        // D10 配额：不启动、不重试（ack），运维看日志/仪表盘 429
+        console.warn(
+          `router: quota exceeded, dropping run ${desc.run_id} for ${desc.repo}`,
+        );
+      }
+      msg.ack();
+    } catch (error) {
+      if (isRetryable(error)) {
+        const attempts = Math.max(1, msg.attempts ?? 1);
+        msg.retry({ delaySeconds: 30 * attempts });
+      } else {
+        // 不可重试：ack 掉，避免同一条消息打满 max_retries 进 DLQ
+        console.error("router: non-retryable submit failure, dropping", error);
+        msg.ack();
+      }
+    }
+  }
+}
+
+/** 路由分派本体；`fetch` 只负责在结果上挂安全头。 */
+async function dispatch(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  const url = new URL(request.url);
+
+  if (url.pathname === "/api/hook") {
+    // ctx 让合并删分支能在 202 之后继续跑（waitUntil）。
+    return handleWebhook(request, env, ctx);
+  }
+  // P3 仪表盘：OAuth 三路由（/api/auth/*）
+  const auth = await handleAuthRoute(env, request, url);
+  if (auth) return auth;
+  // P3 仪表盘：REST API（自带 401 守卫；未命中返回 null）
+  const api = await handleApiRoute(env, request, url);
+  if (api) return api;
+
+  if (url.pathname === "/healthz" && request.method === "GET") {
+    return new Response("ok", {
+      status: 200,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+  // 静态资源（run_worker_first 只保 /api/*；SPA 兜底在资产层）
+  return env.ASSETS.fetch(request);
+}
 
 function isRunDescriptor(value: unknown): value is RunDescriptor {
   if (value === null || typeof value !== "object") return false;

@@ -20,7 +20,12 @@
 import { GITHUB_API_BASE, GITHUB_API_VERSION } from "../github/gitdata";
 import type { Env, RunDescriptor } from "../types";
 import { generateAppJwt } from "../github/auth";
-import { requireUser, type SessionUser } from "./auth";
+import {
+  clearSession,
+  requireUser,
+  sessionIdFromRequest,
+  type SessionUser,
+} from "./auth";
 
 /* -------------------------------------------------------------------------- */
 /* 类型与常量                                                                  */
@@ -149,6 +154,16 @@ export async function handleApiRoute(
   const route = matchRoute(request.method, url.pathname);
   if (!route) return null;
 
+  // CSRF 纵深防御（P0）：状态变更的 POST 若带了 Origin，必须是同源。
+  // 缺 Origin 放行（非浏览器客户端）；SameSite=Lax cookie 仍是主防线。
+  if (
+    route.kind === "repo" &&
+    (route.action === "optimize" || route.action === "settings") &&
+    isCrossOrigin(request, url)
+  ) {
+    return jsonResponse({ error: "forbidden" }, 403);
+  }
+
   const resolveUser = deps.requireUser ?? requireUser;
   const user = await resolveUser(env, request);
   if (!user) return jsonResponse({ error: "unauthorized" }, 401);
@@ -193,6 +208,14 @@ export async function handleApiRoute(
     return await repoStats(env, user, route.owner, route.name, fullName, deps);
   } catch (error) {
     if (error instanceof GithubRequestError) {
+      // GitHub App 的 OAuth user token 会过期/被撤销：401 说明会话里的 token
+      // 已不可用 → 删行 + 401，让前端回到未登录态（否则每次请求都 502 且
+      // 坏会话一直挂着）。所有 GitHub 调用（listRepos / resolveRepoAccess /
+      // stats）都经 `ghRequest` 抛 `GithubRequestError`，这里统一收口。
+      if (error.status === 401) {
+        await dropSession(env, request);
+        return jsonResponse({ error: "unauthorized" }, 401);
+      }
       console.error(
         `dashboard api: GitHub ${error.detail} failed`,
         error.status,
@@ -201,6 +224,31 @@ export async function handleApiRoute(
     }
     console.error("dashboard api: unexpected failure", error);
     return jsonResponse({ error: "internal_error" }, 500);
+  }
+}
+
+/** 上游 401 时清掉当前会话行（删失败只记日志，不把 401 变成 500）。 */
+async function dropSession(env: Env, request: Request): Promise<void> {
+  const sessionId = sessionIdFromRequest(request);
+  if (!sessionId) return;
+  try {
+    await clearSession(env, sessionId);
+  } catch (error) {
+    console.error("dashboard api: failed to drop stale session", error);
+  }
+}
+
+/**
+ * 跨源判定（CSRF 纵深防御）：Origin 缺省 → 非浏览器客户端，放行；
+ * 有 Origin 则 host 必须与请求 URL 一致。畸形 Origin（含 `null`）视为跨源。
+ */
+function isCrossOrigin(request: Request, url: URL): boolean {
+  const origin = request.headers.get("origin");
+  if (!origin) return false;
+  try {
+    return new URL(origin).host !== url.host;
+  } catch {
+    return true;
   }
 }
 

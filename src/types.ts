@@ -151,6 +151,11 @@ export interface Env {
   GITHUB_CLIENT_SECRET: string;
   /** P3 仪表盘 "Install now" 直达安装页（可选；缺省前端兜底到 GitHub 安装管理页）。 */
   GITHUB_APP_SLUG?: string;
+  /**
+   * 对外基址（可选，如 `https://imgbot.alanpally.com`）：配了就把 OAuth
+   * `redirect_uri` 钉死到 `${PUBLIC_BASE_URL}/api/auth/callback`；缺省用请求 origin。
+   */
+  PUBLIC_BASE_URL?: string;
   /** D10 配额：每 installation 每 UTC 日 run 上限；0/缺省 = 不限（字符串 vars）。 */
   QUOTA_DAILY_RUNS?: string;
 }

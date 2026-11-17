@@ -41,6 +41,7 @@
 | D8  | 调度门限用 D1 运行史判断（原版扫 git 历史找 bot commit）                                                                                                                                                                                                             | API 路线下查历史昂贵，D1 更快且等价                                                                                                                             |
 | D9  | P3 仪表盘视觉为全新设计；**操作语义与原版 `Web/` 对齐**，按钮/弹窗/状态文案沿用原版逐字（"Request new optimization"、"Settings for …" 等），登录页营销文案与统计面板为新写（原版无统计页）；"Documentation" 链接引用原版 imgbot.net/docs（`.imgbotconfig` 语义兼容） | 原版 Bootstrap+Vue 观感过时；UX 对等 = 操作对等，逐字契约（§2.2）只覆盖 PR/commit 模板                                                                          |
 | D10 | 多租户配额 = **每 installation 每 UTC 日 run 上限**（`QUOTA_DAILY_RUNS`，默认 0=不限）；在 `RepoLock.submit` 唯一入口漏斗收口；私有仓档位/Metered 计费随 Marketplace 层引入（维持 D3）                                                                               | 无计费层时的成本护栏（oracle P2-7）；原版的 planId 私有仓配额属商业层，复刻体验 ≠ 复刻商业                                                                      |
+| D11 | P0 加固三件套（2026-11-18）：① 安全响应头（CSP/scripts 严格 + frame-ancestors、nosniff、Referrer/Permissions-Policy，`src/security.ts` + `public/_headers` 双覆盖）+ 状态变更 POST 的 Origin 校验 + `PUBLIC_BASE_URL` 钉死 OAuth redirect_uri；② user token 过期 = 401 删会话强制重登（refresh 轮换留作后续）；③ retention：sessions 过期即删 / deliveries 30d / runs 365d / image_cache 180d / dead_letters 90d，DLQ 落 D1 告警 | oracle P3-13/P3-15/P2-11；Safe Browsing 误判后加固有洗白价值；401 重登是最低成本方案，refresh 轮换待 App 侧确认后再做 |
 
 ---
 

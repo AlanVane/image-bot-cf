@@ -308,6 +308,39 @@ describe("GET /api/auth/login", () => {
     expect(states[0]).not.toBe(states[1]);
   });
 
+  it("配置 PUBLIC_BASE_URL → redirect_uri 钉死到该基址（忽略请求 Host）", async () => {
+    const h = createDb();
+    const env = createEnv(h.db, {
+      PUBLIC_BASE_URL: "https://imgbot.alanpally.com",
+    });
+
+    const res = await handleAuthRoute(
+      env,
+      new Request(loginUrl()),
+      new URL(loginUrl()),
+    );
+
+    const location = new URL(res!.headers.get("location")!);
+    expect(location.searchParams.get("redirect_uri")).toBe(
+      `https://imgbot.alanpally.com${AUTH_CALLBACK_PATH}`,
+    );
+
+    // 尾斜杠容忍：钉死值不因配置写法多出 `//api`。
+    const envSlash = createEnv(h.db, {
+      PUBLIC_BASE_URL: "https://imgbot.alanpally.com/",
+    });
+    const resSlash = await handleAuthRoute(
+      envSlash,
+      new Request(loginUrl()),
+      new URL(loginUrl()),
+    );
+    expect(
+      new URL(resSlash!.headers.get("location")!).searchParams.get(
+        "redirect_uri",
+      ),
+    ).toBe(`https://imgbot.alanpally.com${AUTH_CALLBACK_PATH}`);
+  });
+
   it("凭据未配置 → 500，报错点名 GITHUB_CLIENT_ID/SECRET", async () => {
     const h = createDb();
     const env = createEnv(h.db, {

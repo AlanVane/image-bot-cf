@@ -53,8 +53,7 @@ export interface AuthDeps {
   now?: () => number;
 }
 
-/** 两个公共入口的工厂形态：同一份实现，带上注入依赖。 */
-export interface AuthHandlers {
+/** 两个公共入口的工厂形态：同一份实现，带上注入依赖。 */ export interface AuthHandlers {
   requireUser(env: Env, request: Request): Promise<SessionUser | null>;
   handleAuthRoute(
     env: Env,
@@ -99,6 +98,16 @@ export function handleAuthRoute(
   url: URL,
 ): Promise<Response | null> {
   return handleAuthRouteWith(env, request, url, {});
+}
+
+/** 从请求 Cookie 头取会话 id（无 cookie → null）；api.ts 处理上游 401 时用。 */
+export function sessionIdFromRequest(request: Request): string | null {
+  return parseCookies(request.headers.get("cookie"))[SESSION_COOKIE] ?? null;
+}
+
+/** 删除一条会话（上游 401 = token 过期/被撤销，会话不再可用）。 */
+export async function clearSession(env: Env, sessionId: string): Promise<void> {
+  await deleteSessionRow(env, sessionId);
 }
 
 /** 注入版工厂（测试用；等价于直接调用上面两个函数 + 替换 fetch/时钟）。 */
@@ -194,10 +203,7 @@ function handleLogin(env: Env, url: URL): Response {
   const state = randomState();
   const authorize = new URL(GITHUB_OAUTH_AUTHORIZE_URL);
   authorize.searchParams.set("client_id", clientId);
-  authorize.searchParams.set(
-    "redirect_uri",
-    `${url.origin}${AUTH_CALLBACK_PATH}`,
-  );
+  authorize.searchParams.set("redirect_uri", callbackUri(env, url));
   authorize.searchParams.set("state", state);
 
   const headers = new Headers({
@@ -265,7 +271,7 @@ async function handleCallback(
   }
 
   const now = nowMs(deps);
-  const redirectUri = `${url.origin}${AUTH_CALLBACK_PATH}`;
+  const redirectUri = callbackUri(env, url);
 
   let token: string;
   try {
@@ -434,6 +440,17 @@ async function fetchUserProfile(
 
 function nowMs(deps: AuthDeps): number {
   return deps.now ? deps.now() : Date.now();
+}
+
+/**
+ * OAuth `redirect_uri`：配了 `PUBLIC_BASE_URL` 就钉死到它（防 Host 头注入 /
+ * 多域名漂移——GitHub 只认 App 里登记的回调），否则沿用请求 origin。
+ */
+function callbackUri(env: Env, url: URL): string {
+  const base = (env.PUBLIC_BASE_URL ?? "").trim().replace(/\/+$/, "");
+  return base
+    ? `${base}${AUTH_CALLBACK_PATH}`
+    : `${url.origin}${AUTH_CALLBACK_PATH}`;
 }
 
 function randomState(): string {

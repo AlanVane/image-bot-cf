@@ -37,6 +37,8 @@ CREATE TABLE runs (
   finished_at     TEXT
 );
 CREATE INDEX idx_runs_repo ON runs(repo, created_at DESC);
+-- 保留策略（maintenance.ts）：按 created_at 扫过期 run
+CREATE INDEX idx_runs_created ON runs(created_at);
 
 CREATE TABLE image_cache (
   installation_id INTEGER NOT NULL,
@@ -55,6 +57,8 @@ CREATE TABLE deliveries (
   event       TEXT,
   received_at TEXT NOT NULL
 );
+-- 保留策略（maintenance.ts）：按 received_at 扫过期投递记录
+CREATE INDEX idx_deliveries_received ON deliveries(received_at);
 
 CREATE TABLE pulls (
   installation_id INTEGER NOT NULL,
@@ -85,3 +89,13 @@ CREATE TABLE sessions (
   expires_at TEXT NOT NULL
 );
 CREATE INDEX idx_sessions_expires ON sessions(expires_at);
+
+-- DLQ 捕获：进入 router-dlq 的消息落库（默认不重试，只留证据供排查）
+CREATE TABLE IF NOT EXISTS dead_letters (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  queue TEXT,
+  attempts INTEGER,
+  body TEXT,
+  error TEXT,
+  received_at TEXT NOT NULL
+);
