@@ -285,7 +285,7 @@ function renderLogin() {
   identity.append(brandMark(), node("span", "", "Imgbot"));
   const loginNav = node("nav", "login-nav");
   const docs = node("a", "documentation-link", "Documentation");
-  docs.href = "https://imgbot.net/docs";
+  docs.href = "/docs/";
   docs.target = "_blank";
   docs.rel = "noopener noreferrer";
   const signIn = node("a", "button button-quiet", "Sign in");
@@ -487,7 +487,7 @@ function renderHeader() {
   divider.setAttribute("aria-hidden", "true");
   const product = node("span", "header-context", "Repository dashboard");
   const docs = node("a", "documentation-link", "Documentation");
-  docs.href = "https://imgbot.net/docs";
+  docs.href = "/docs/";
   docs.target = "_blank";
   docs.rel = "noopener noreferrer";
   const account = node("div", "account-menu");

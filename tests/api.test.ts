@@ -162,18 +162,36 @@ class FakeD1 {
         }));
     }
 
-    if (norm.startsWith("SELECT repo, state, created_at")) {
+    // 窗口函数的 JS 仿真：每个 repo 取 created_at 最新的一行（rn = 1）。
+    if (norm.startsWith("SELECT repo, created_at, state FROM (")) {
       const [installationId] = args as [number];
-      return this.runs
+      const rows = this.runs
         .filter((row) => row.installation_id === installationId)
-        .sort(byCreatedDesc)
-        .map((row) => ({
+        .sort(byCreatedDesc);
+      const seen = new Set<string>();
+      const out: Row[] = [];
+      for (const row of rows) {
+        if (seen.has(row.repo)) continue;
+        seen.add(row.repo);
+        out.push({
           repo: row.repo,
-          state: row.state,
           created_at: row.created_at,
-          bytes_before: row.bytes_before ?? null,
-          bytes_after: row.bytes_after ?? null,
-        }));
+          state: row.state,
+        });
+      }
+      return out;
+    }
+
+    // SUM(COALESCE(bytes_before, 0) - COALESCE(bytes_after, 0)) GROUP BY repo
+    if (norm.startsWith("SELECT repo, SUM(COALESCE(bytes_before, 0)")) {
+      const [installationId] = args as [number];
+      const sums = new Map<string, number>();
+      for (const row of this.runs) {
+        if (row.installation_id !== installationId) continue;
+        const saved = (row.bytes_before ?? 0) - (row.bytes_after ?? 0);
+        sums.set(row.repo, (sums.get(row.repo) ?? 0) + saved);
+      }
+      return [...sums].map(([repo, saved]) => ({ repo, saved }));
     }
 
     if (norm.startsWith("SELECT repo, COUNT(*) AS pr_count")) {
@@ -796,6 +814,63 @@ describe("GET /api/repos", () => {
     // 用用户 token（不是 installation token）访问 /user/* 系端点。
     expect(harness.fetchCalls[0]?.authorization).toBe("Bearer user-token");
     expect(harness.fetchCalls[0]?.url).toContain("per_page=100");
+  });
+
+  it("SQL 聚合的节省量语义与 savedBytes 一致（NULL 记 0、不 clamp 负值）", async () => {
+    const harness = makeHarness({
+      handlers: {
+        "/user/installations": () =>
+          jsonResponse({ installations: [{ id: 42 }] }),
+        "/user/installations/42/repositories": () =>
+          jsonResponse({
+            repositories: [{ full_name: "o/r", private: false }],
+          }),
+      },
+      seed: {
+        runs: [
+          {
+            run_id: "run-new",
+            installation_id: 42,
+            repo: "o/r",
+            trigger: "push",
+            state: "failed",
+            bytes_before: null,
+            bytes_after: 100,
+            created_at: "2026-11-17T10:00:00Z",
+          },
+          {
+            run_id: "run-mid",
+            installation_id: 42,
+            repo: "o/r",
+            trigger: "push",
+            state: "done",
+            bytes_before: 5_000,
+            bytes_after: null,
+            created_at: "2026-11-16T10:00:00Z",
+          },
+          {
+            run_id: "run-old",
+            installation_id: 42,
+            repo: "o/r",
+            trigger: "push",
+            state: "done",
+            bytes_before: 1_000,
+            bytes_after: 1_200,
+            created_at: "2026-11-15T10:00:00Z",
+          },
+        ],
+      },
+    });
+
+    const res = await callApi(harness, "/api/repos");
+    expect(res?.status).toBe(200);
+    const body = (await res?.json()) as ReposApiEntry[];
+
+    expect(body).toHaveLength(1);
+    // -100（null→0） + 5000（null→0） + -200（变大的 run 不 clamp）
+    expect(body[0]?.totalSavedBytes).toBe(4_700);
+    expect(body[0]?.lastRunAt).toBe("2026-11-17T10:00:00Z");
+    expect(body[0]?.lastRunState).toBe("failed");
   });
 
   it("无安装 → 空数组，且不查 D1 聚合", async () => {

@@ -520,34 +520,42 @@ interface RepoAggregate {
   defaultBranchOverride: string | null;
 }
 
-/** 一次 installation 的 D1 聚合（4 条查询，仓库数无关）。 */
+/** 一次 installation 的 D1 聚合（5 条查询，仓库数无关；均为 SQL 侧聚合）。 */
 async function loadRepoAggregates(
   env: Env,
   installationId: number,
 ): Promise<Map<string, RepoAggregate>> {
   const aggregates = new Map<string, RepoAggregate>();
 
-  const runs = await env.DB.prepare(
-    "SELECT repo, state, created_at, bytes_before, bytes_after FROM runs " +
-      "WHERE installation_id = ? ORDER BY created_at DESC",
+  // 每个 repo 的最近一条 run（窗口函数取 rn = 1），不在 JS 里扫全表。
+  const lastRuns = await env.DB.prepare(
+    "SELECT repo, created_at, state FROM (" +
+      "SELECT repo, created_at, state, " +
+      "ROW_NUMBER() OVER (PARTITION BY repo ORDER BY created_at DESC) AS rn " +
+      "FROM runs WHERE installation_id = ?" +
+      ") WHERE rn = 1",
   )
     .bind(installationId)
-    .all<{
-      repo: string;
-      state: string;
-      created_at: string;
-      bytes_before: number | null;
-      bytes_after: number | null;
-    }>();
+    .all<{ repo: string; created_at: string; state: string }>();
 
-  for (const row of runs.results ?? []) {
+  for (const row of lastRuns.results ?? []) {
     const entry = ensureAggregate(aggregates, row.repo);
-    // 已按 created_at DESC 排序：首次出现即最近一条 run。
-    if (entry.lastRunAt === null) {
-      entry.lastRunAt = row.created_at;
-      entry.lastRunState = row.state;
-    }
-    entry.totalSavedBytes += savedBytes(row.bytes_before, row.bytes_after);
+    entry.lastRunAt = row.created_at;
+    entry.lastRunState = row.state;
+  }
+
+  // 节省量：SQL 侧求和，语义与 `savedBytes()` 一致（任一侧 NULL 记 0，不做 clamp）。
+  const savings = await env.DB.prepare(
+    "SELECT repo, " +
+      "SUM(COALESCE(bytes_before, 0) - COALESCE(bytes_after, 0)) AS saved " +
+      "FROM runs WHERE installation_id = ? GROUP BY repo",
+  )
+    .bind(installationId)
+    .all<{ repo: string; saved: number | null }>();
+
+  for (const row of savings.results ?? []) {
+    ensureAggregate(aggregates, row.repo).totalSavedBytes =
+      readNumber(row.saved) ?? 0;
   }
 
   const pulls = await env.DB.prepare(

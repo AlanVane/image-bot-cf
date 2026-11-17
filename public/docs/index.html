@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f2eee4" />
+    <meta
+      name="description"
+      content="A practical guide to configuring Imgbot for your GitHub repositories."
+    />
+    <title>Imgbot documentation</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="docs-page">
+      <header class="docs-topbar">
+        <div class="docs-topbar-inner">
+          <a class="brand-lockup" href="/" aria-label="Imgbot home">
+            <span class="brand-mark" aria-hidden="true">i</span>
+            <span>Imgbot</span>
+          </a>
+          <div class="docs-topbar-note">Repository guide</div>
+          <a class="docs-home-link" href="/">Back to dashboard <span aria-hidden="true">↗</span></a>
+        </div>
+      </header>
+
+      <main>
+        <section class="docs-hero" aria-labelledby="docs-title">
+          <div class="docs-hero-copy">
+            <p class="eyebrow">A practical field guide</p>
+            <h1 id="docs-title">Imgbot documentation</h1>
+            <p class="docs-intro">
+              Everything you need to configure and run Imgbot on your repositories.
+            </p>
+          </div>
+          <div class="docs-hero-seal" aria-hidden="true">
+            <span></span>
+            <i></i>
+          </div>
+          <span class="docs-hero-index" aria-hidden="true">Field notes / 01</span>
+        </section>
+
+        <div class="docs-layout">
+          <nav class="docs-toc" aria-label="On this page">
+            <p class="docs-toc-title">On this page</p>
+            <ol>
+              <li><a href="#how-it-works">How it works</a></li>
+              <li><a href="#supported-formats">Supported formats</a></li>
+              <li><a href="#configuration">.imgbotconfig</a></li>
+              <li><a href="#dashboard-settings">Dashboard settings</a></li>
+              <li><a href="#authorization">Authorization &amp; permissions</a></li>
+              <li><a href="#example">Configuration example</a></li>
+            </ol>
+          </nav>
+
+          <article class="docs-content">
+            <section class="docs-section" id="how-it-works" aria-labelledby="how-title">
+              <div class="docs-section-heading">
+                <span class="docs-section-index" aria-hidden="true">01</span>
+                <h2 id="how-title">How it works</h2>
+              </div>
+              <p>
+                Install the GitHub App, push images to your default branch, and Imgbot opens a pull request with the lighter versions. Repeated runs update that same pull request in place. Only strictly smaller files replace the originals, and every result is decode-validated first.
+              </p>
+            </section>
+
+            <section class="docs-section" id="supported-formats" aria-labelledby="formats-title">
+              <div class="docs-section-heading">
+                <span class="docs-section-index" aria-hidden="true">02</span>
+                <h2 id="formats-title">Supported formats</h2>
+              </div>
+              <ul class="format-list" aria-label="Supported image formats">
+                <li><code>.png</code></li>
+                <li><code>.jpg</code></li>
+                <li><code>.jpeg</code></li>
+                <li><code>.gif</code></li>
+                <li><code>.svg</code></li>
+              </ul>
+              <p class="docs-note">File extensions are matched case-insensitively.</p>
+              <p>
+                Lossless by default; <code>aggressiveCompression</code> switches to lossy variants where available. Oversized images (≥8MP or ≥15MB) are handled by a separate container lane.
+              </p>
+            </section>
+
+            <section class="docs-section" id="configuration" aria-labelledby="configuration-title">
+              <div class="docs-section-heading">
+                <span class="docs-section-index" aria-hidden="true">03</span>
+                <h2 id="configuration-title"><code>.imgbotconfig</code> reference</h2>
+              </div>
+              <p>
+                Place <code>.imgbotconfig</code> at the repository root. All fields are optional.
+              </p>
+
+              <dl class="config-list">
+                <div class="config-field">
+                  <dt><code>schedule</code></dt>
+                  <dd>
+                    <p><code>daily</code> | <code>weekly</code> | <code>monthly</code> — limits PRs to at most once a day/week/month. Default: optimize as images arrive.</p>
+                  </dd>
+                </div>
+
+                <div class="config-field">
+                  <dt><code>ignoredFiles</code></dt>
+                  <dd>
+                    <p>Patterns to skip. Accepts regex patterns and simple globbing. When ignoring by filename no path is necessary.</p>
+                    <ul class="docs-patterns">
+                      <li>
+                        <span>By extension</span>
+                        <pre><code>["*.jpeg"]</code></pre>
+                      </li>
+                      <li>
+                        <span>By folder</span>
+                        <pre><code>["public/special_images/*"]</code></pre>
+                      </li>
+                      <li>
+                        <span>By filename</span>
+                        <pre><code>["special-image1.png", "other-image1.png"]</code></pre>
+                      </li>
+                      <li>
+                        <span>Nested folders</span>
+                        <pre><code>["**/test_images/**"]</code></pre>
+                      </li>
+                      <li>
+                        <span>Path prefix</span>
+                        <pre><code>["path/to/prefix*"]</code></pre>
+                      </li>
+                    </ul>
+                  </dd>
+                </div>
+
+                <div class="config-field">
+                  <dt><code>aggressiveCompression</code></dt>
+                  <dd><p><code>true</code> | <code>false</code> (default false).</p></dd>
+                </div>
+
+                <div class="config-field">
+                  <dt><code>compressWiki</code></dt>
+                  <dd>
+                    <p><code>true</code> | <code>false</code> — also optimizes images in the repository wiki. Wiki images are updated directly on the default branch (GitHub wikis have no pull requests).</p>
+                  </dd>
+                </div>
+
+                <div class="config-field">
+                  <dt><code>minKBReduced</code></dt>
+                  <dd>
+                    <p>Minimum total KB saved before opening/updating a PR (default 10). <code>0</code> or <code>null</code> disables the threshold.</p>
+                  </dd>
+                </div>
+
+                <div class="config-field">
+                  <dt><code>prTitle</code></dt>
+                  <dd>
+                    <p>Custom PR title. <strong>Free for everyone in this build.</strong> Default: <code>[ImgBot] Optimize images</code>.</p>
+                  </dd>
+                </div>
+
+                <div class="config-field">
+                  <dt><code>prBody</code></dt>
+                  <dd>
+                    <p>Custom PR body with <code>{optimization_ratio}</code> and <code>{optimization_details}</code> magic tags. <strong>Free for everyone in this build.</strong></p>
+                  </dd>
+                </div>
+              </dl>
+            </section>
+
+            <section class="docs-section" id="dashboard-settings" aria-labelledby="dashboard-title">
+              <div class="docs-section-heading">
+                <span class="docs-section-index" aria-hidden="true">04</span>
+                <h2 id="dashboard-title">Dashboard settings</h2>
+              </div>
+              <div class="branch-note">
+                <span class="branch-note-label">Default branch override</span>
+                <p>If you want Imgbot to look after a different branch instead of the default for the repo.</p>
+              </div>
+              <ul class="dashboard-features">
+                <li><span aria-hidden="true">↗</span><span>Repo enable/disable toggle</span></li>
+                <li><span aria-hidden="true">↗</span><span>Manual “Request new optimization”</span></li>
+                <li><span aria-hidden="true">↗</span><span>Run history</span></li>
+              </ul>
+            </section>
+
+            <section class="docs-section" id="authorization" aria-labelledby="authorization-title">
+              <div class="docs-section-heading">
+                <span class="docs-section-index" aria-hidden="true">05</span>
+                <h2 id="authorization-title">Authorization &amp; permissions</h2>
+              </div>
+              <p>
+                After installation, Imgbot requests an installation token from GitHub (code: read &amp; write, pull requests: read &amp; write, metadata: read).
+              </p>
+              <p>Commits land with a verified signature (green Verified badge).</p>
+              <p>You can uninstall the GitHub App at any time to revoke all access.</p>
+            </section>
+
+            <section class="docs-section docs-example-section" id="example" aria-labelledby="example-title">
+              <div class="docs-section-heading">
+                <span class="docs-section-index" aria-hidden="true">06</span>
+                <h2 id="example-title">Configuration example</h2>
+              </div>
+              <p>A complete <code>.imgbotconfig</code> with each available field:</p>
+              <pre class="docs-json"><code>{
+  "schedule": "weekly",
+  "ignoredFiles": [
+    "*.jpeg",
+    "public/special_images/*",
+    "special-image1.png",
+    "other-image1.png",
+    "**/test_images/**",
+    "path/to/prefix*"
+  ],
+  "aggressiveCompression": false,
+  "compressWiki": true,
+  "minKBReduced": 10,
+  "prTitle": "[ImgBot] Optimize images",
+  "prBody": "Saved {optimization_ratio}\n\n{optimization_details}"
+}</code></pre>
+            </section>
+          </article>
+        </div>
+
+        <section class="docs-closing" aria-labelledby="closing-title">
+          <div class="docs-closing-inner">
+            <p class="eyebrow">A little less weight on every image</p>
+            <h2 id="closing-title">Optimize your images from now until forever.</h2>
+            <a class="button button-primary docs-sign-in" href="/api/auth/login">
+              Sign in <span class="button-arrow" aria-hidden="true">↗</span>
+            </a>
+          </div>
+        </section>
+      </main>
+
+      <footer class="docs-footer">
+        <span>Imgbot documentation</span>
+        <a href="/">Return to Imgbot</a>
+      </footer>
+    </div>
+  </body>
+</html>
