@@ -46,6 +46,7 @@
 | D13 | P2 三件套（2026-11-18）：① 自托管 `/docs/` 文档页（替换 imgbot.net/docs 外链——上游有"仅付费"等失实措辞；`.imgbotconfig` 全字段 + ignoredFiles 五例，prTitle/prBody 明示本构建免费）；② `listRepos` 聚合下沉 SQL（`ROW_NUMBER()` 最近 run + `GROUP BY` 节省量，语义与旧 JS 逐条对齐含负值不 clamp）；③ Playwright 前端 e2e（18 例/5 spec，静态伺服 + mock API，CI 增 e2e 任务） | 原 D9 的外链尾巴就此闭环；e2e 用 mock 隔离后端（后端已有 447 单测） |
 | D14 | 自称层品牌改名 **ImageBot**（2026-11-18 用户决策）：登录页/仪表盘/文档页的自称与营销文案弃用原版名；契约层不动（`[ImgBot] Optimize images` 模板、`.imgbotconfig`、`imgbot` 分支、DCO 签名仍逐字对等） | 本项目是独立重建（GitHub App: Image-Bot-CF），顶原版名自称有误导/商标风险，也添品牌混淆信号（Safe Browsing 误判同源） |
 | D15 | user-token 生命周期补完（2026-11-18）：refresh token 轮换（`requireUser` 单点收口，剩余 ≤5min 即换，失败删会话）+ AES-256-GCM 静态加密（`SESSION_ENCRYPTION_KEY` secret，`v1:` 前缀格式；明文/密文/无 key 兼容矩阵见 SECURITY.md） | 补完 P0 只做的 401 强制重登（oracle P3-13 全量）+ P3-14；已知限并：并发刷新竞态窗口（单请求串行无影响）、legacy 明文行下次刷新时顺带升级 |
+| D16 | 配额层（2026-11-18）：① `repos.enabled` 开关语义修复——run 启动即读 D1，显式禁用 → `skipped_disabled`/`repo_disabled`（不重试、不影响 wiki）；② 私有仓启用软配额 `QUOTA_PRIVATE_REPOS`（0=不限），开关启用私有仓时按 GitHub 列表私有性 × D1 启动态计数（目标仓排除保证幂等），超限 429 `private_quota_exceeded`（原版限额措辞） | 补上开关「善意谎言」的完整性缺口；**计费层为下一阶段**（套餐映射优先、env 作默认，D2 自托管免费不变）；run 级配额执行需 D1 存私有性（`is_private` 列）——留给计费层一并做 |
 
 ---
 
