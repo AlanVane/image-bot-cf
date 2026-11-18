@@ -29,7 +29,7 @@ import {
 } from "../github/http";
 import type { Env, RunDescriptor } from "../types";
 import { generateAppJwt } from "../github/auth";
-import { privateRepoLimit } from "../quota";
+import { effectivePrivateCap, isMarketplaceBilling } from "../quota";
 import {
   clearSession,
   requireUser,
@@ -177,11 +177,21 @@ export async function handleApiRoute(
 
   try {
     if (route.kind === "me") {
+      // D16：会话 `user_id` 就是 GitHub 账户 id（与 Marketplace 的 account.id 同源）。
+      const cap = await effectivePrivateCap(env, {
+        accountId: user.userId,
+        login: user.login,
+      });
       return jsonResponse(
         {
           login: user.login,
           userId: user.userId,
           installUrl: appInstallUrl(env),
+          plan: {
+            name: cap.planName,
+            privateLimit: cap.limit,
+            source: cap.source,
+          },
         },
         200,
       );
@@ -445,8 +455,13 @@ interface RepoAccess {
   installationId: number;
   /** GitHub 规范名（响应体 full_name）——URL 段大小写不可信，锁键/D1 一律用它（P1）。 */
   fullName: string;
-  /** 仓库是否私有（私有仓库启用受 `QUOTA_PRIVATE_REPOS` 限制，§10）。 */
+  /** 仓库是否私有（私有仓库启用受计划/`QUOTA_PRIVATE_REPOS` 限制，§10）。 */
   isPrivate: boolean;
+  /**
+   * installation 的账户 id（`GET /repos/{o}/{r}/installation` 响应体的 `account.id`）。
+   * D16 计划解析的主键；响应体缺字段时 null（调用方退回 account_login 匹配）。
+   */
+  accountId: number | null;
 }
 
 async function resolveRepoAccess(
@@ -497,7 +512,29 @@ async function resolveRepoAccess(
       : `${owner}/${name}`;
   const isPrivate =
     (repoRes.body as Record<string, unknown> | null)?.private === true;
-  return { installationId, fullName: canonicalName, isPrivate };
+  return {
+    installationId,
+    fullName: canonicalName,
+    isPrivate,
+    accountId: readAccountId(installRes.body),
+  };
+}
+
+/**
+ * installation 响应体的 `account.id`（D16 计费解析主键）。
+ * 旧响应/测试桩可能没有 `account` 字段 → null，由调用方用 account_login 兜底。
+ */
+function readAccountId(body: unknown): number | null {
+  if (body === null || typeof body !== "object") return null;
+  const account = (body as Record<string, unknown>).account;
+  if (
+    account === null ||
+    typeof account !== "object" ||
+    Array.isArray(account)
+  ) {
+    return null;
+  }
+  return readNumber((account as Record<string, unknown>).id);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -666,6 +703,7 @@ async function optimizeRepo(
     repo: fullName,
     trigger: "manual",
     base_ref: "",
+    private: access.isPrivate,
   };
 
   const stub = env.REPO_LOCK.getByName(
@@ -787,19 +825,28 @@ async function updateSettings(
   fullName = access.fullName;
   const installationId = access.installationId;
 
-  // 私有仓库启用配额（`QUOTA_PRIVATE_REPOS`，0/缺省 = 不限）：只在"启用私有仓库"
-  // 时计数；超额返回 429 且**不写库**（先判后写）。
-  const privateLimit = privateRepoLimit(env);
-  if (patch.enabled === true && privateLimit > 0 && access.isPrivate) {
-    const enabledPrivate = await countEnabledPrivateRepos(
-      env,
-      user,
-      installationId,
-      fullName,
-      deps,
-    );
-    if (enabledPrivate >= privateLimit) {
-      return jsonResponse({ error: "private_quota_exceeded" }, 429);
+  // 私有仓库启用配额：生效上限来自计划（`BILLING_MODE=marketplace`）或
+  // `QUOTA_PRIVATE_REPOS`（self-host，0 = 不限）。只在"启用私有仓库"时计数；
+  // 超额返回 429 且**不写库**（先判后写）。
+  // 语义差异：Marketplace 的 cap = 0 是"免费档不允许私有仓库"（必须拦），
+  // self-host 的 0 是"不限"（跳过检查）。
+  if (patch.enabled === true && access.isPrivate) {
+    const billingOn = isMarketplaceBilling(env);
+    const cap = await effectivePrivateCap(env, {
+      accountId: access.accountId,
+      login: user.login,
+    });
+    if (billingOn || cap.limit > 0) {
+      const enabledPrivate = await countEnabledPrivateRepos(
+        env,
+        user,
+        installationId,
+        fullName,
+        deps,
+      );
+      if (enabledPrivate >= cap.limit) {
+        return jsonResponse({ error: "private_quota_exceeded" }, 429);
+      }
     }
   }
 

@@ -47,6 +47,7 @@
 | D14 | 自称层品牌改名 **ImageBot**（2026-11-18 用户决策）：登录页/仪表盘/文档页的自称与营销文案弃用原版名；契约层不动（`[ImgBot] Optimize images` 模板、`.imgbotconfig`、`imgbot` 分支、DCO 签名仍逐字对等） | 本项目是独立重建（GitHub App: Image-Bot-CF），顶原版名自称有误导/商标风险，也添品牌混淆信号（Safe Browsing 误判同源） |
 | D15 | user-token 生命周期补完（2026-11-18）：refresh token 轮换（`requireUser` 单点收口，剩余 ≤5min 即换，失败删会话）+ AES-256-GCM 静态加密（`SESSION_ENCRYPTION_KEY` secret，`v1:` 前缀格式；明文/密文/无 key 兼容矩阵见 SECURITY.md） | 补完 P0 只做的 401 强制重登（oracle P3-13 全量）+ P3-14；已知限并：并发刷新竞态窗口（单请求串行无影响）、legacy 明文行下次刷新时顺带升级 |
 | D16 | 配额层（2026-11-18）：① `repos.enabled` 开关语义修复——run 启动即读 D1，显式禁用 → `skipped_disabled`/`repo_disabled`（不重试、不影响 wiki）；② 私有仓启用软配额 `QUOTA_PRIVATE_REPOS`（0=不限），开关启用私有仓时按 GitHub 列表私有性 × D1 启动态计数（目标仓排除保证幂等），超限 429 `private_quota_exceeded`（原版限额措辞） | 补上开关「善意谎言」的完整性缺口；**计费层为下一阶段**（套餐映射优先、env 作默认，D2 自托管免费不变）；run 级配额执行需 D1 存私有性（`is_private` 列）——留给计费层一并做 |
+| D17 | 计费层（2026-11-18）：Marketplace 套餐驱动私有仓配额——五档对齐原版现价（OSS \$0/0、Agency \$79/3、Enterprise \$199/10、Gold \$399/25、Platinum \$799/100，价格为展示元数据；D2 不变：prTitle/prBody 免费）；`marketplace_purchase` webhook（**挂在 listing 页而非 App 设置**，官方文档定案）→ `marketplace_purchases` 表；`effectivePrivateCap` 解析链 = 套餐映射 > FREE_PRIVATE_CAP(0) > env（自托管）；run 级执行补齐 D16（`is_private` 列 + RunDescriptor.private 三处喂入） | 事件不重投（官方）→ 配额判错向免费档保守收敛，对账 API 留作后续；BILLING_MODE 缺省 off = 线上零变化，listing 上线后开启 |
 
 ---
 

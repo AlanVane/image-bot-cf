@@ -61,6 +61,7 @@ import {
   createPrTitle,
 } from "../ux/templates";
 import { getCodecSet } from "./codecs-boot";
+import { checkPrivateQuota } from "./private-quota";
 import {
   BATCH_SIZE,
   MAX_PR_IMAGES,
@@ -178,6 +179,17 @@ interface LoadConfigResult {
   /** §9-R10：GitHub 标记 tree 被截断（P2 退化为分目录递归）。 */
   treeTruncated: boolean;
 }
+
+/** 本轮不进入扫描的终态原因（load-config 判定，run() 映射成 `skipped_disabled`）。 */
+type SkipSignalReason = "repo_disabled" | "private_quota_exceeded";
+
+/**
+ * load-config 结果用判别式返回：终态原因必须随 step 结果一起重放，
+ * 不能放在闭包变量里（Workflow 恢复时 step 不会重跑）。
+ */
+type LoadConfigOutcome =
+  | { kind: "loaded"; result: LoadConfigResult }
+  | { kind: "skipped"; reason: SkipSignalReason };
 
 /** §7.3 正向缓存的统计重放（PR body / commit message 的全量口径）。 */
 interface ReplayStat {
@@ -316,14 +328,16 @@ function errorText(err: unknown): string {
 }
 
 /**
- * 仓库被仪表盘停用（`repos.enabled = 0`）时的收尾信号。
+ * 本轮直接收尾的终态信号（停用仓库 / 私有配额超限）。
  *
  * 只在 step **外**抛出：步进重试只作用于 step 内部，这里不重试、不算失败；
  * `run()` 的 catch 会把它映射成 `skipped_disabled` 并照常走 cleanup（删暂存 + 释锁）。
+ * `reason` 与 load-config 已写入 `runs.error` 的值一致（`repo_disabled` /
+ * `private_quota_exceeded`），只用于日志与终态映射。
  */
 class RepoDisabledSignal extends Error {
-  constructor() {
-    super("repo_disabled");
+  constructor(readonly reason: SkipSignalReason = "repo_disabled") {
+    super(reason);
     this.name = "RepoDisabledSignal";
   }
 }
@@ -692,7 +706,7 @@ export class OptimizeRun extends WorkflowEntrypoint<Env, RunDescriptor> {
       /* ---------------------------------------------------------------- */
       /* ② load-config：默认分支 + 根树 + `.imgbotconfig`                  */
       /* ---------------------------------------------------------------- */
-      const loadedConfig = await step.do<LoadConfigResult | null>(
+      const loadedConfig = await step.do<LoadConfigOutcome>(
         "load-config",
         STEP_CONFIG.loadConfig,
         async () => {
@@ -710,7 +724,43 @@ export class OptimizeRun extends WorkflowEntrypoint<Env, RunDescriptor> {
               state: "skipped_disabled",
               error: "repo_disabled",
             });
-            return null;
+            return {
+              kind: "skipped" as const,
+              reason: "repo_disabled" as const,
+            };
+          }
+
+          // D16：把描述符里的可见性回填到 `repos.is_private`（未知 = 不写）。
+          if (params.private !== undefined) {
+            await env.DB.prepare(
+              "INSERT INTO repos (installation_id, name, is_private) VALUES (?, ?, ?) " +
+                "ON CONFLICT(installation_id, name) DO UPDATE SET " +
+                "is_private = excluded.is_private",
+            )
+              .bind(installationId, params.repo, params.private ? 1 : 0)
+              .run();
+          }
+
+          // D16 运行期强制执行：计费开启时，私有仓库数超过计划上限即收尾。
+          // （self-host 的 env 上限只在仪表盘开关时刻生效，run 期不拦——旧行为。）
+          const quota = await checkPrivateQuota(
+            env,
+            installationId,
+            params.private,
+          );
+          if (quota.skip) {
+            console.warn(
+              `[OptimizeRun] ${params.repo}: private quota exceeded ` +
+                `(${quota.count}/${quota.cap}), skipping run`,
+            );
+            await patchRun(env, runId, {
+              state: "skipped_disabled",
+              error: "private_quota_exceeded",
+            });
+            return {
+              kind: "skipped" as const,
+              reason: "private_quota_exceeded" as const,
+            };
           }
 
           const { client, token } = await githubContext(env, installationId);
@@ -780,19 +830,24 @@ export class OptimizeRun extends WorkflowEntrypoint<Env, RunDescriptor> {
           });
 
           return {
-            config,
-            baseRef,
-            baseSha,
-            rootTreeSha,
-            entries: imageEntries.slice(0, MAX_SCAN_ENTRIES),
-            treeTruncated: truncated,
+            kind: "loaded" as const,
+            result: {
+              config,
+              baseRef,
+              baseSha,
+              rootTreeSha,
+              entries: imageEntries.slice(0, MAX_SCAN_ENTRIES),
+              treeTruncated: truncated,
+            },
           };
         },
       );
 
-      // 停用仓库：在 step 外结束本轮（不进重试），由 catch 映射为 skipped_disabled。
-      if (loadedConfig === null) throw new RepoDisabledSignal();
-      loaded = loadedConfig;
+      // 停用/超配额仓库：在 step 外结束本轮（不进重试），由 catch 映射为 skipped_disabled。
+      if (loadedConfig.kind === "skipped") {
+        throw new RepoDisabledSignal(loadedConfig.reason);
+      }
+      loaded = loadedConfig.result;
 
       /* ---------------------------------------------------------------- */
       /* ③ scan-tree：忽略规则 + image_cache 比对 → 分块                   */
@@ -1363,8 +1418,8 @@ export class OptimizeRun extends WorkflowEntrypoint<Env, RunDescriptor> {
       }
     } catch (err) {
       if (err instanceof RepoDisabledSignal) {
-        // load-config 已把 runs.state 写成 skipped_disabled（error = repo_disabled）；
-        // 正常收尾，不记失败、不重试。
+        // load-config 已把 runs.state 写成 skipped_disabled，error = 信号原因
+        //（repo_disabled / private_quota_exceeded）；正常收尾，不记失败、不重试。
         terminalState = "skipped_disabled";
       } else {
         failure = err;

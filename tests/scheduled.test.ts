@@ -472,19 +472,19 @@ describe("GitHub 列表响应解析", () => {
     expect(parseInstallationIds(null)).toEqual([]);
   });
 
-  it("parseInstallationRepos 取 full_name + default_branch", () => {
+  it("parseInstallationRepos 取 full_name + default_branch + private", () => {
     expect(
       parseInstallationRepos({
         total_count: 2,
         repositories: [
-          { full_name: "acme/site", default_branch: "main" },
+          { full_name: "acme/site", default_branch: "main", private: true },
           { full_name: "acme/docs", default_branch: null },
           { full_name: "" },
         ],
       }),
     ).toEqual([
-      { repo: "acme/site", defaultBranch: "main" },
-      { repo: "acme/docs", defaultBranch: null },
+      { repo: "acme/site", defaultBranch: "main", isPrivate: true },
+      { repo: "acme/docs", defaultBranch: null, isPrivate: false },
     ]);
     expect(parseInstallationRepos({})).toEqual([]);
   });

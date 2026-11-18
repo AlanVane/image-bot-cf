@@ -60,6 +60,10 @@ interface Harness {
   sent: RunDescriptor[];
   sendOptions: unknown[];
   deliveryRows: Map<string, string | null>;
+  /** `marketplace_purchases` 的内存复刻（account_id 主键）。 */
+  purchases: Map<number, Record<string, unknown>>;
+  /** 写入计数（去重断言用；可变对象避免 getter 被解构时定型）。 */
+  stats: { purchaseWrites: number };
   router: { fail: boolean };
 }
 
@@ -67,6 +71,8 @@ function createHarness(): Harness {
   const sent: RunDescriptor[] = [];
   const sendOptions: unknown[] = [];
   const deliveryRows = new Map<string, string | null>();
+  const purchases = new Map<number, Record<string, unknown>>();
+  const counters = { purchaseWrites: 0 };
   const router = { fail: false };
 
   const db = {
@@ -75,6 +81,32 @@ function createHarness(): Harness {
         bind(...params: unknown[]) {
           return {
             async run() {
+              if (sql.includes("INSERT INTO marketplace_purchases")) {
+                const [
+                  accountId,
+                  accountLogin,
+                  planId,
+                  planName,
+                  state,
+                  updatedAt,
+                ] = params as [
+                  number,
+                  string | null,
+                  number,
+                  string | null,
+                  string,
+                  string,
+                ];
+                purchases.set(accountId, {
+                  account_login: accountLogin,
+                  plan_id: planId,
+                  plan_name: planName,
+                  state,
+                  updated_at: updatedAt,
+                });
+                counters.purchaseWrites += 1;
+                return { success: true, meta: { changes: 1 } };
+              }
               if (!sql.includes("INSERT OR IGNORE INTO deliveries")) {
                 throw new Error(`unexpected SQL in test: ${sql}`);
               }
@@ -115,7 +147,15 @@ function createHarness(): Harness {
     GITHUB_WEBHOOK_SECRET: SECRET,
   } as unknown as Env;
 
-  return { env, sent, sendOptions, deliveryRows, router };
+  return {
+    env,
+    sent,
+    sendOptions,
+    deliveryRows,
+    purchases,
+    stats: counters,
+    router,
+  } as Harness;
 }
 
 async function sign(body: string, secret = SECRET): Promise<string> {
@@ -259,6 +299,40 @@ describe("mapEventToRuns", () => {
     });
     expect(typeof runs[0]!.run_id).toBe("string");
     expect(runs[0]!.run_id).not.toBe("");
+  });
+
+  it("push 带 repository.private → 描述符携带 private（D16）", () => {
+    const privateRuns = mapEventToRuns(
+      "push",
+      pushPayload(
+        "main",
+        [{ added: ["img/a.png"], modified: [], removed: [] }],
+        {
+          repository: {
+            full_name: "acme/site",
+            default_branch: "main",
+            private: true,
+          },
+        },
+      ),
+    );
+    expect(privateRuns[0]?.private).toBe(true);
+
+    const publicRuns = mapEventToRuns(
+      "push",
+      pushPayload(
+        "main",
+        [{ added: ["img/a.png"], modified: [], removed: [] }],
+        {
+          repository: {
+            full_name: "acme/site",
+            default_branch: "main",
+            private: false,
+          },
+        },
+      ),
+    );
+    expect(publicRuns[0]?.private).toBe(false);
   });
 
   it("push 纯文档 → 空", () => {
@@ -505,6 +579,153 @@ describe("handleWebhook", () => {
     expect(body).toEqual({ ok: false, error: "internal_error" });
     expect(JSON.stringify(body)).not.toContain("curtain");
     expect(sent).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handleWebhook：Marketplace 计费事件（D16）
+// ---------------------------------------------------------------------------
+
+/** `marketplace_purchase` 信封（GitHub Marketplace webhook 无 installation 字段）。 */
+function marketplacePayload(
+  action: string,
+  plan: { id: number; name: string } = { id: 1001, name: "Agency" },
+  account: { id: number; login: string } = { id: 583231, login: "octocat" },
+): Record<string, unknown> {
+  return {
+    action,
+    effective_date: "2026-11-18T00:00:00Z",
+    marketplace_purchase: {
+      account,
+      plan,
+      state: "active",
+    },
+  };
+}
+
+describe("handleWebhook marketplace_purchase", () => {
+  it("purchased → upsert active 计划，202 queued 0 且不入队", async () => {
+    const { env, sent, purchases } = createHarness();
+    const response = await handleWebhook(
+      await hookRequest(marketplacePayload("purchased"), {
+        event: "marketplace_purchase",
+        delivery: "mp-1",
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toEqual({ ok: true, queued: 0 });
+    expect(sent).toHaveLength(0);
+    expect(purchases.get(583231)).toMatchObject({
+      account_login: "octocat",
+      plan_id: 1001,
+      plan_name: "Agency",
+      state: "active",
+    });
+  });
+
+  it("changed → 同一账户换成新计划并保持 active", async () => {
+    const { env, purchases } = createHarness();
+    await handleWebhook(
+      await hookRequest(marketplacePayload("purchased"), {
+        event: "marketplace_purchase",
+        delivery: "mp-2a",
+      }),
+      env,
+    );
+    await handleWebhook(
+      await hookRequest(
+        marketplacePayload("changed", { id: 1002, name: "Enterprise" }),
+        { event: "marketplace_purchase", delivery: "mp-2b" },
+      ),
+      env,
+    );
+
+    expect(purchases.size).toBe(1);
+    expect(purchases.get(583231)).toMatchObject({
+      plan_id: 1002,
+      plan_name: "Enterprise",
+      state: "active",
+    });
+  });
+
+  it("cancelled → state 置 cancelled（保留 payload 里的 plan 行）", async () => {
+    const { env, purchases } = createHarness();
+    await handleWebhook(
+      await hookRequest(marketplacePayload("purchased"), {
+        event: "marketplace_purchase",
+        delivery: "mp-3a",
+      }),
+      env,
+    );
+    const response = await handleWebhook(
+      await hookRequest(marketplacePayload("cancelled"), {
+        event: "marketplace_purchase",
+        delivery: "mp-3b",
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(202);
+    expect(purchases.get(583231)).toMatchObject({
+      plan_id: 1001,
+      state: "cancelled",
+    });
+  });
+
+  it("重复 delivery → duplicate，不再写 marketplace_purchases", async () => {
+    const { env, purchases, stats } = createHarness();
+    const first = await handleWebhook(
+      await hookRequest(marketplacePayload("purchased"), {
+        event: "marketplace_purchase",
+        delivery: "mp-4",
+      }),
+      env,
+    );
+    expect(first.status).toBe(202);
+    expect(stats.purchaseWrites).toBe(1);
+
+    const second = await handleWebhook(
+      await hookRequest(marketplacePayload("cancelled"), {
+        event: "marketplace_purchase",
+        delivery: "mp-4",
+      }),
+      env,
+    );
+    expect(second.status).toBe(202);
+    await expect(second.json()).resolves.toEqual({
+      ok: true,
+      duplicate: true,
+    });
+    expect(stats.purchaseWrites).toBe(1);
+    expect(purchases.get(583231)).toMatchObject({ state: "active" });
+  });
+
+  it("畸形 payload / 未知 action → 202 且不写库", async () => {
+    const { env, purchases, stats } = createHarness();
+    const malformed = await handleWebhook(
+      await hookRequest(
+        { action: "purchased" },
+        {
+          event: "marketplace_purchase",
+          delivery: "mp-5",
+        },
+      ),
+      env,
+    );
+    expect(malformed.status).toBe(202);
+
+    const pending = await handleWebhook(
+      await hookRequest(marketplacePayload("pending_change"), {
+        event: "marketplace_purchase",
+        delivery: "mp-6",
+      }),
+      env,
+    );
+    expect(pending.status).toBe(202);
+    expect(stats.purchaseWrites).toBe(0);
+    expect(purchases.size).toBe(0);
   });
 });
 

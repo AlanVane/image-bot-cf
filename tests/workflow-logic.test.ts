@@ -15,6 +15,7 @@ import {
   chunk,
   shouldAbortForTruncatedReplays,
   shouldSkipDisabled,
+  shouldSkipPrivateQuota,
   splitOwnerRepo,
   stagingRefForRun,
   sumSizes,
@@ -318,5 +319,28 @@ describe("仪表盘停用开关的运行时语义（repos.enabled）", () => {
   it("缺行 / NULL（默认启用）→ 照常跑（保持原行为）", () => {
     expect(shouldSkipDisabled(null)).toBe(false);
     expect(shouldSkipDisabled(undefined)).toBe(false);
+  });
+});
+
+describe("D16 私有配额运行期闸门（shouldSkipPrivateQuota）", () => {
+  it("私有仓库超过计划上限 → 跳过", () => {
+    expect(shouldSkipPrivateQuota(true, true, 4, 3)).toBe(true);
+  });
+
+  it("正好达到上限 → 放行（cap = 3 允许第 1..3 个）", () => {
+    expect(shouldSkipPrivateQuota(true, true, 3, 3)).toBe(false);
+    expect(shouldSkipPrivateQuota(true, true, 1, 3)).toBe(false);
+  });
+
+  it("免费档 cap = 0：任何私有仓库都超限", () => {
+    expect(shouldSkipPrivateQuota(true, true, 1, 0)).toBe(true);
+  });
+
+  it("计费关闭（self-host）→ run 期不拦（env 上限只在开关时刻生效）", () => {
+    expect(shouldSkipPrivateQuota(true, false, 99, 0)).toBe(false);
+  });
+
+  it("公共仓库不受私有配额约束", () => {
+    expect(shouldSkipPrivateQuota(false, true, 99, 0)).toBe(false);
   });
 });

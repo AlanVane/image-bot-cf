@@ -91,7 +91,7 @@ async function api(path, options = {}) {
       quota_exceeded:
         "This installation has reached its daily optimization quota. Try again tomorrow.",
       private_quota_exceeded:
-        "You reached the limit of private repositories. Disable another private repository to enable this one.",
+        "You reached the limit of private repositories on your current plan. Upgrade on GitHub Marketplace to enable more.",
       github_error: "GitHub could not be reached. Please try again.",
       internal_error: "The service had a problem. Please try again.",
     };

@@ -65,7 +65,8 @@ export function mapEventToRuns(
     case "push":
       return mapPushEvent(body);
     default:
-      // ping / marketplace_purchase / pull_request / *_deleted …：P2
+      // ping / pull_request / *_deleted …：P2。
+      // `marketplace_purchase` 由 ingress 直接落库（D16），同样不产生 run。
       return [];
   }
 }
@@ -155,6 +156,9 @@ function mapPushEvent(body: Record<string, unknown>): RunDescriptor[] {
     trigger: "push",
     base_ref: defaultBranch,
   };
+  // D16：push payload 的 repository 一定带 private 布尔值 → run 期回填 repos.is_private。
+  if (typeof repository?.private === "boolean")
+    desc.private = repository.private;
   const after = asString(body.after);
   if (after) desc.base_sha = after;
   return [desc];

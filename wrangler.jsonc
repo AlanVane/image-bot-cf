@@ -83,11 +83,17 @@
   // 仪表盘 "Install now" 直达安装页（§13.3 installUrl；slug 公开信息非密钥）
   // QUOTA_DAILY_RUNS：D10 多租户配额（每 installation 每 UTC 日 run 上限；0 = 不限）
   // QUOTA_PRIVATE_REPOS：D10 私有仓库启用配额（每 installation 可同时启用数；0 = 不限）
+  // BILLING_MODE：D16 计费层开关（"marketplace" = 私有上限改由 Marketplace 计划决定；其他/缺省 = 关）
+  // PLAN_PRIVATE_CAPS：plan_id → 私有仓库上限的 JSON（如 {"123456":3,"123457":10}）
+  // FREE_PRIVATE_CAP：无有效计划时的私有仓库上限（0 = 免费档不允许私有仓库）
   // PUBLIC_BASE_URL：OAuth redirect_uri 钉死到正式域名（防 Host 头注入/多域名漂移）
   "vars": {
     "GITHUB_APP_SLUG": "image-bot-cf",
     "QUOTA_DAILY_RUNS": "0",
     "QUOTA_PRIVATE_REPOS": "0",
+    "BILLING_MODE": "off",
+    "PLAN_PRIVATE_CAPS": "{}",
+    "FREE_PRIVATE_CAP": "0",
     "PUBLIC_BASE_URL": "https://imgbot.alanpally.com"
   },
   // P3 仪表盘：静态资源与 API 同域；/api/* 先进 Worker，其余交资产层（SPA 兜底）。
